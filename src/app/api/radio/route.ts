@@ -118,7 +118,7 @@ async function queryStations(base: string, profile: RadioProfileId, limit: numbe
 
       if (!id || !name || !streamUrl) continue;
 
-      // só deixa passar streams HTTPS (evita bloqueio de mixed content em domínio https://vercel)
+      // só HTTPS: evita mixed-content no domínio https://vercel
       if (!isHttpsUrl(streamUrl)) continue;
 
       // se tiver lastcheckok, respeita quando for “ok”
