@@ -51,7 +51,8 @@ export default function MusicDock() {
       }
       setStations(j.stations);
       setIdx(0);
-    } catch (e) {
+      setStatus("idle");
+    } catch {
       setStations([]);
       setIdx(0);
       setStatus("error");
@@ -86,7 +87,6 @@ export default function MusicDock() {
       setStatus("playing");
     } catch {
       setStatus("error");
-      // tenta outra estação
       nextStation();
     }
   }
@@ -98,20 +98,17 @@ export default function MusicDock() {
     setStatus("paused");
   }
 
-  // 1) Carrega lista de rádios ao montar
   useEffect(() => {
     loadStations();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 2) Atualiza volume no elemento
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     audio.volume = volume;
   }, [volume]);
 
-  // 3) Sempre que trocar estação e estiver enabled + tocando, tenta tocar a nova
   useEffect(() => {
     if (!enabled) return;
     if (!station) return;
@@ -119,7 +116,6 @@ export default function MusicDock() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [idx, enabled]);
 
-  // 4) Reconnect defensivo pra stream que “morre”
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -129,7 +125,6 @@ export default function MusicDock() {
       nextStation();
     };
     const onStalled = () => {
-      // tenta recarregar e seguir
       if (enabled) playCurrent();
     };
     const onEnded = () => {
@@ -243,7 +238,9 @@ export default function MusicDock() {
             min={0}
             max={100}
             value={Math.round(volume * 100)}
-            onChange={(e) => setVolume(clamp(Number(e.target.value) / 100, 0, 1))}
+            onChange={(e) =>
+              setVolume(clamp(Number(e.target.value) / 100, 0, 1))
+            }
           />
           <button
             className={`${pill} px-3 py-2 text-sm hover:bg-white/10 transition`}
