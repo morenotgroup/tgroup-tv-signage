@@ -23,12 +23,10 @@ const FALLBACK_BASES = [
 ];
 
 async function pickRadioBrowserBase(): Promise<string> {
-  // Radio Browser recomenda descobrir servidores em vez de fixar um só.
-  // A estratégia abaixo tenta resolver hosts via DNS; se falhar, usa fallback.
   try {
     const ips = await dns.resolve4("all.api.radio-browser.info");
-    // Reverse pode falhar em alguns ambientes; então tentamos converter IP->host
     const hosts: string[] = [];
+
     for (const ip of ips.slice(0, 6)) {
       try {
         const rev = await dns.reverse(ip);
@@ -37,13 +35,13 @@ async function pickRadioBrowserBase(): Promise<string> {
         // ignore
       }
     }
+
     const cleanHosts = hosts
       .map((h) => h.trim())
       .filter(Boolean)
       .map((h) => (h.startsWith("https://") ? h : `https://${h}`));
 
     const candidates = cleanHosts.length ? cleanHosts : FALLBACK_BASES;
-
     return candidates[Math.floor(Math.random() * candidates.length)];
   } catch {
     return FALLBACK_BASES[Math.floor(Math.random() * FALLBACK_BASES.length)];
@@ -66,12 +64,13 @@ export async function GET(req: Request) {
   const { searchParams } = new URL(req.url);
 
   const tag = (searchParams.get("tag") || "lofi").trim();
-  const countrycode = (searchParams.get("countrycode") || "BR").trim().toUpperCase();
+  const countrycode = (searchParams.get("countrycode") || "BR")
+    .trim()
+    .toUpperCase();
   const limit = Math.min(Number(searchParams.get("limit") || "80"), 150);
 
   const base = await pickRadioBrowserBase();
 
-  // Search endpoint
   const url =
     `${base}/json/stations/search?` +
     new URLSearchParams({
@@ -85,10 +84,8 @@ export async function GET(req: Request) {
 
   const r = await fetch(url, {
     headers: {
-      // Radio Browser pede um User-Agent identificável
       "User-Agent": "tgroup-tv-signage/0.1 (Next.js on Vercel)",
     },
-    // Evita cache agressivo entre deploys
     cache: "no-store",
   });
 
@@ -105,7 +102,10 @@ export async function GET(req: Request) {
   const filtered = (Array.isArray(data) ? data : [])
     .filter((s) => s && s.stationuuid && s.name)
     .filter((s) => s.lastcheckok === 1 || typeof s.lastcheckok === "undefined")
-    .filter((s) => typeof s.url_resolved === "string" && s.url_resolved.startsWith("https://"));
+    .filter(
+      (s) =>
+        typeof s.url_resolved === "string" && s.url_resolved.startsWith("https://")
+    );
 
   const stations = uniqBy(filtered, (s) => s.stationuuid)
     .slice(0, 60)
@@ -122,10 +122,6 @@ export async function GET(req: Request) {
 
   return NextResponse.json(
     { ok: true, base, tag, countrycode, stations },
-    {
-      headers: {
-        "Cache-Control": "public, max-age=60",
-      },
-    }
+    { headers: { "Cache-Control": "public, max-age=60" } }
   );
 }
