@@ -14,5 +14,5 @@ export const SIGNAGE_CONFIG = {
 
   // News RSS (Google News BR)
   // Formato padrão do RSS do Google News com parâmetros hl/gl/ceid.
-  newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419"
-};
+  newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
+} as const;
