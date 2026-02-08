@@ -26,6 +26,8 @@ export const SIGNAGE_CONFIG = {
   refreshWeatherMs: 10 * 60 * 1000,
   refreshNewsMs: 20 * 60 * 1000,
 
+  newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
+
   defaultTicker:
     "T.Group • Painel ao vivo • Cultura, performance e tecnologia • Confira as atualizações do mês •",
 
