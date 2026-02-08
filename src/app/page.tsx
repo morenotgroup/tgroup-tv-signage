@@ -54,6 +54,8 @@ function weatherLabel(code: number) {
 }
 
 export default function Page() {
+  const [tvMode, setTvMode] = useState(false);
+  const [fullscreenHint, setFullscreenHint] = useState<string | null>(null);
   const [now, setNow] = useState(new Date());
   const [scene, setScene] = useState(0);
 
@@ -66,6 +68,74 @@ export default function Page() {
   const [news, setNews] = useState<NewsItem[]>([]);
   const [birthdays, setBirthdays] = useState<Birthday[]>([]);
   const [lastSync, setLastSync] = useState<Date | null>(null);
+
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const tvParam = params.get("tv");
+    const tvFromQuery = tvParam === "1";
+    const tvFromStorage = window.localStorage.getItem("tvMode") === "1";
+    const isTvMode = tvParam !== null ? tvFromQuery : tvFromStorage;
+
+    setTvMode(isTvMode);
+    document.body.classList.toggle("tv-mode", isTvMode);
+    window.localStorage.setItem("tvMode", isTvMode ? "1" : "0");
+
+    return () => {
+      document.body.classList.remove("tv-mode", "tv-cursor-hidden");
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!tvMode) {
+      document.body.classList.remove("tv-cursor-hidden");
+      return;
+    }
+
+    let hideCursorTimeout = window.setTimeout(() => {
+      document.body.classList.add("tv-cursor-hidden");
+    }, 3000);
+
+    const onPointerMove = () => {
+      document.body.classList.remove("tv-cursor-hidden");
+      window.clearTimeout(hideCursorTimeout);
+      hideCursorTimeout = window.setTimeout(() => {
+        document.body.classList.add("tv-cursor-hidden");
+      }, 3000);
+    };
+
+    const preventDefault = (event: Event) => event.preventDefault();
+    const preventKeyboardScroll = (event: KeyboardEvent) => {
+      const blockedKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", " "];
+      if (blockedKeys.includes(event.key)) event.preventDefault();
+    };
+
+    window.addEventListener("pointermove", onPointerMove, { passive: true });
+    window.addEventListener("wheel", preventDefault, { passive: false });
+    window.addEventListener("touchmove", preventDefault, { passive: false });
+    window.addEventListener("keydown", preventKeyboardScroll, { passive: false });
+
+    return () => {
+      window.clearTimeout(hideCursorTimeout);
+      document.body.classList.remove("tv-cursor-hidden");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("wheel", preventDefault);
+      window.removeEventListener("touchmove", preventDefault);
+      window.removeEventListener("keydown", preventKeyboardScroll);
+    };
+  }, [tvMode]);
+
+  async function onEnterFullscreen() {
+    setFullscreenHint(null);
+    try {
+      if (!document.fullscreenEnabled) {
+        setFullscreenHint("Seu navegador bloqueou fullscreen. Use F11 ou menu do navegador.");
+        return;
+      }
+      await document.documentElement.requestFullscreen();
+    } catch {
+      setFullscreenHint("Não foi possível entrar em fullscreen. Tente F11 ou menu do navegador.");
+    }
+  }
 
   // relógio
   useEffect(() => {
@@ -183,8 +253,8 @@ export default function Page() {
       {/* Dock fixo de música (Radio Browser). Fica por cima e você liga quando quiser */}
       <MusicDock />
 
-      <div className="topRow">
-        <div className="brand">
+      <div className="topRow tvDrift">
+        <div className="brand tvDriftAlt">
           <div className="brandMark" />
           <div className="brandText">
             <div className="name">{SIGNAGE_CONFIG.companyName}</div>
@@ -192,11 +262,21 @@ export default function Page() {
           </div>
         </div>
 
-        <div className="clock">
+        <div className="clock tvDrift">
           <div className="time">{formatTimePtBR(now)}</div>
           <div className="date">{formatDatePtBR(now)}</div>
         </div>
       </div>
+
+      {tvMode ? (
+        <div className="tvHud tvDriftAlt">
+          <div className="tvStatusPill">TV • {formatTimePtBR(now)} • Sync {lastSync ? formatTimePtBR(lastSync) : "—"}</div>
+          <button className="tvAction" onClick={onEnterFullscreen} type="button">
+            Tela cheia
+          </button>
+          {fullscreenHint ? <div className="tvHint">{fullscreenHint}</div> : null}
+        </div>
+      ) : null}
 
       <div className="main">
         <div className="sceneWrap card">
@@ -339,7 +419,7 @@ export default function Page() {
           </div>
         </div>
 
-        <div className="footer">
+        <div className="footer tvDrift">
           <div className="ticker">
             <span>{tickerText}</span>
           </div>
