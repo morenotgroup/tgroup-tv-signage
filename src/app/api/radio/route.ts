@@ -12,8 +12,6 @@ type RawStation = {
   country?: string;
   codec?: string;
   bitrate?: number;
-  tags?: string;
-  lastcheckok?: number;
 };
 
 type Station = {
@@ -26,16 +24,6 @@ type Station = {
   bitrate?: number;
 };
 
-type ApiResp = {
-  ok: boolean;
-  profile: RadioProfileId;
-  label?: string;
-  count?: number;
-  stations: Station[];
-  error?: string;
-  source?: string;
-};
-
 const MIRRORS = [
   "https://de1.api.radio-browser.info",
   "https://nl1.api.radio-browser.info",
@@ -43,65 +31,41 @@ const MIRRORS = [
   "https://all.api.radio-browser.info",
 ];
 
-const PROFILE_TAGS: Record<RadioProfileId, { label: string; tags: string[] }> = {
-  agency: {
-    label: "Agência",
-    tags: ["dance", "electronic", "house", "pop", "hits", "top 40"],
-  },
-  focus: {
-    label: "Focus",
-    tags: ["lofi", "study", "focus", "chillout", "ambient", "downtempo"],
-  },
-  chill: {
-    label: "Chill",
-    tags: ["chill", "lounge", "ambient", "downtempo", "relax", "chillout"],
-  },
+const PROFILE_TAGS: Record<RadioProfileId, string[]> = {
+  agency: ["dance", "electronic", "house", "pop", "hits", "top 40"],
+  focus: ["lofi", "study", "focus", "ambient", "downtempo"],
+  chill: ["chill", "lounge", "relax", "chillout", "ambient"],
 };
+
+function normProfile(p: string | null): RadioProfileId {
+  if (p === "agency" || p === "focus" || p === "chill") return p;
+  return "agency";
+}
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
 }
 
-function normProfile(p?: string | null): RadioProfileId {
-  if (p === "agency" || p === "focus" || p === "chill") return p;
-  return "agency";
-}
-
-function safeStr(s: unknown) {
-  return typeof s === "string" ? s.trim() : "";
+function safeStr(x: unknown) {
+  return typeof x === "string" ? x.trim() : "";
 }
 
 function isHttpUrl(s: string) {
   return s.startsWith("http://") || s.startsWith("https://");
 }
 
-function uniqBy<T>(arr: T[], keyFn: (t: T) => string) {
-  const seen = new Set<string>();
-  const out: T[] = [];
-  for (const item of arr) {
-    const k = keyFn(item);
-    if (!k || seen.has(k)) continue;
-    seen.add(k);
-    out.push(item);
-  }
-  return out;
-}
-
-async function fetchWithTimeout(url: string, ms = 7000) {
-  const controller = new AbortController();
-  const t = setTimeout(() => controller.abort(), ms);
-
+async function fetchJson(url: string, timeoutMs = 7000) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
     const r = await fetch(url, {
-      signal: controller.signal,
+      signal: ctrl.signal,
       headers: {
-        // Radio Browser pede User-Agent em exemplos/bibliotecas e ajuda a evitar bloqueios genéricos
         "User-Agent": "tgroup-tv-signage/0.1 (Next.js on Vercel)",
         Accept: "application/json",
       },
       cache: "no-store",
     });
-
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     return (await r.json()) as RawStation[];
   } finally {
@@ -109,103 +73,90 @@ async function fetchWithTimeout(url: string, ms = 7000) {
   }
 }
 
-function buildSearchUrl(base: string, tags: string[], limit: number) {
-  // Endpoint oficial: /json/stations/search
-  const endpoint = new URL("/json/stations/search", base);
-
-  // Estratégia: usar 1 tag “principal” por chamada e depois juntar + deduplicar.
-  // Aqui a gente não seta tag direto no URL final; montamos em loop fora.
-  endpoint.searchParams.set("limit", String(limit));
-  endpoint.searchParams.set("hidebroken", "true");
-  endpoint.searchParams.set("order", "clickcount");
-  endpoint.searchParams.set("reverse", "true");
-
-  return endpoint;
+function uniqById(items: Station[]) {
+  const seen = new Set<string>();
+  const out: Station[] = [];
+  for (const s of items) {
+    if (!s.id || seen.has(s.id)) continue;
+    seen.add(s.id);
+    out.push(s);
+  }
+  return out;
 }
 
-async function getStations(profile: RadioProfileId, limit: number) {
-  const { tags } = PROFILE_TAGS[profile];
+async function queryStations(base: string, profile: RadioProfileId, limit: number) {
+  const tags = PROFILE_TAGS[profile];
+  const perTag = Math.max(10, Math.ceil(limit / Math.max(1, tags.length)));
 
-  // tenta mirrors em sequência
+  const collected: Station[] = [];
+
+  for (const tag of tags) {
+    const u = new URL("/json/stations/search", base);
+    u.searchParams.set("limit", String(perTag));
+    u.searchParams.set("hidebroken", "true");
+    u.searchParams.set("order", "clickcount");
+    u.searchParams.set("reverse", "true");
+    u.searchParams.set("tag", tag);
+
+    const raw = await fetchJson(u.toString(), 7000);
+
+    for (const s of raw) {
+      const id = safeStr(s.stationuuid);
+      const name = safeStr(s.name);
+      const streamUrl = safeStr(s.url_resolved);
+      if (!id || !name || !streamUrl) continue;
+      if (!isHttpUrl(streamUrl)) continue;
+
+      collected.push({
+        id,
+        name,
+        streamUrl,
+        favicon: safeStr(s.favicon) || undefined,
+        country: safeStr(s.country) || undefined,
+        codec: safeStr(s.codec) || undefined,
+        bitrate: typeof s.bitrate === "number" ? s.bitrate : undefined,
+      });
+    }
+  }
+
+  return uniqById(collected).slice(0, limit);
+}
+
+export async function GET(req: Request) {
+  const url = new URL(req.url);
+  const profile = normProfile(url.searchParams.get("profile"));
+  const limit = clamp(Number(url.searchParams.get("limit") || "80"), 10, 120);
+
   let lastErr = "Falha desconhecida";
+
   for (const base of MIRRORS) {
     try {
-      const perTag = Math.max(10, Math.ceil(limit / Math.max(1, tags.length)));
-
-      const collected: RawStation[] = [];
-      for (const tag of tags) {
-        const endpoint = buildSearchUrl(base, tags, perTag);
-        endpoint.searchParams.set("tag", tag);
-
-        const urlStr = endpoint.toString();
-        const items = await fetchWithTimeout(urlStr, 7000);
-        collected.push(...items);
-      }
-
-      const cleaned = collected
-        .map((s): Station | null => {
-          const id = safeStr(s.stationuuid);
-          const name = safeStr(s.name);
-          const streamUrl = safeStr(s.url_resolved);
-          if (!id || !name || !streamUrl) return null;
-          if (!isHttpUrl(streamUrl)) return null;
-
-          // alguns registros podem estar “quebrados”, então filtramos pelo básico
-          return {
-            id,
-            name,
-            streamUrl,
-            favicon: safeStr(s.favicon) || undefined,
-            country: safeStr(s.country) || undefined,
-            codec: safeStr(s.codec) || undefined,
-            bitrate: typeof s.bitrate === "number" ? s.bitrate : undefined,
-          };
-        })
-        .filter(Boolean) as Station[];
-
-      const unique = uniqBy(cleaned, (x) => x.id).slice(0, limit);
-
-      return {
-        ok: true as const,
-        stations: unique,
-        source: base,
-      };
+      const stations = await queryStations(base, profile, limit);
+      return NextResponse.json(
+        {
+          ok: true,
+          profile,
+          count: stations.length,
+          stations,
+          source: base,
+        },
+        { headers: { "Cache-Control": "no-store, max-age=0" } }
+      );
     } catch (e: any) {
       lastErr = e?.message ? String(e.message) : "Erro ao consultar mirror";
       continue;
     }
   }
 
-  return {
-    ok: false as const,
-    stations: [] as Station[],
-    source: "mirrors",
-    error: lastErr,
-  };
-}
-
-export async function GET(req: Request) {
-  const u = new URL(req.url);
-  const profile = normProfile(u.searchParams.get("profile"));
-  const limit = clamp(Number(u.searchParams.get("limit") || "80"), 10, 120);
-
-  const { label } = PROFILE_TAGS[profile];
-
-  const result = await getStations(profile, limit);
-
-  const payload: ApiResp = {
-    ok: result.ok,
-    profile,
-    label,
-    count: result.stations.length,
-    stations: result.stations,
-    source: result.source,
-    ...(result.ok ? {} : { error: (result as any).error ?? "Falha" }),
-  };
-
-  return NextResponse.json(payload, {
-    headers: {
-      "Cache-Control": "no-store, max-age=0",
+  return NextResponse.json(
+    {
+      ok: false,
+      profile,
+      count: 0,
+      stations: [],
+      source: "mirrors",
+      error: lastErr,
     },
-  });
+    { headers: { "Cache-Control": "no-store, max-age=0" } }
+  );
 }
