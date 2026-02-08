@@ -2,15 +2,33 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import AgencyBackdrop from "@/components/AgencyBackdrop";
+import BrandStrip from "@/components/BrandStrip";
 import MusicDock from "@/components/MusicDock";
 import { SIGNAGE_CONFIG } from "@/config";
+import { BIRTHDAYS, type Birthday } from "@/data/birthdays";
 
-/**
- * Helpers (PT-BR)
- */
+type SceneId = 0 | 1 | 2 | 3;
+
+type WeatherData = {
+  current?: {
+    temperature_2m?: number;
+    wind_speed_10m?: number;
+    relative_humidity_2m?: number;
+    weather_code?: number;
+  };
+};
+
+type NewsItem = {
+  title: string;
+  link?: string;
+  pubDate?: string;
+  source?: string;
+};
+
 function formatTimePtBR(d: Date) {
   return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
 }
+
 function formatDatePtBR(d: Date) {
   return d.toLocaleDateString("pt-BR", {
     weekday: "long",
@@ -20,36 +38,52 @@ function formatDatePtBR(d: Date) {
   });
 }
 
-function clamp(n: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, n));
+function weatherLabel(code?: number) {
+  if (code === undefined) return "Atualizando";
+  if ([0].includes(code)) return "Céu limpo";
+  if ([1, 2].includes(code)) return "Parcialmente nublado";
+  if ([3].includes(code)) return "Nublado";
+  if ([45, 48].includes(code)) return "Neblina";
+  if ([51, 53, 55, 61, 63, 65, 80, 81, 82].includes(code)) return "Chuva";
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return "Neve";
+  if ([95, 96, 99].includes(code)) return "Tempestade";
+  return "Condição variável";
 }
 
-type SceneId = 0 | 1 | 2 | 3;
+function getTodayKey(now: Date) {
+  const month = String(now.getMonth() + 1).padStart(2, "0");
+  const day = String(now.getDate()).padStart(2, "0");
+  return `${month}-${day}`;
+}
+
+function parseBirthdayDate(reference: Date, date: string) {
+  const [monthRaw, dayRaw] = date.split("-");
+  const month = Number(monthRaw);
+  const day = Number(dayRaw);
+  return new Date(reference.getFullYear(), month - 1, day, 12, 0, 0, 0);
+}
 
 export default function Page() {
   const [now, setNow] = useState(() => new Date());
   const [scene, setScene] = useState<SceneId>(0);
-
-  // “sync” — atualiza quando a cena gira (ou quando você quiser amarrar em refresh de dados)
   const [lastSync, setLastSync] = useState<Date | null>(null);
-
-  // TV mode (kiosk-friendly)
   const [tvMode, setTvMode] = useState(false);
-  const [fullscreenHint, setFullscreenHint] = useState<string>("");
+  const [fullscreenHint, setFullscreenHint] = useState("");
+  const [isDebug, setIsDebug] = useState(process.env.NODE_ENV === "development");
+
+  const [weather, setWeather] = useState<WeatherData | null>(null);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [posterFailures, setPosterFailures] = useState<Record<string, true>>({});
 
   const tickRef = useRef<number | null>(null);
 
-  // --- Clock tick
   useEffect(() => {
     const t = window.setInterval(() => setNow(new Date()), 1000);
     return () => window.clearInterval(t);
   }, []);
 
-  // --- Scene rotation
   useEffect(() => {
-    // evita múltiplos intervals
     if (tickRef.current) window.clearInterval(tickRef.current);
-
     const ms = Math.max(6000, Number(SIGNAGE_CONFIG.sceneDurationMs || 12000));
     tickRef.current = window.setInterval(() => {
       setScene((s) => ((s + 1) % 4) as SceneId);
@@ -62,24 +96,20 @@ export default function Page() {
     };
   }, []);
 
-  // --- Load TV mode preference (query param + localStorage)
   useEffect(() => {
     try {
       const url = new URL(window.location.href);
-      const q = url.searchParams.get("tv");
-      const forced = q === "1" || q === "true";
-
-      const saved = localStorage.getItem("tgroup_tv_mode");
-      const savedOn = saved === "1";
-
-      const initial = forced || savedOn;
-      setTvMode(initial);
+      const tvQuery = url.searchParams.get("tv");
+      const debugQuery = url.searchParams.get("debug");
+      const forcedTv = tvQuery === "1" || tvQuery === "true";
+      const savedOn = localStorage.getItem("tgroup_tv_mode") === "1";
+      setTvMode(forcedTv || savedOn);
+      if (debugQuery === "1") setIsDebug(true);
     } catch {
       // ignore
     }
   }, []);
 
-  // --- Apply TV mode UX (hide cursor, reduce scroll, etc.)
   useEffect(() => {
     const cls = "tgroup-tvmode";
     if (tvMode) document.documentElement.classList.add(cls);
@@ -92,132 +122,143 @@ export default function Page() {
     }
   }, [tvMode]);
 
-  // --- Fullscreen helper
   const onEnterFullscreen = useCallback(async () => {
     setFullscreenHint("");
     try {
-      // Prefer a fullscreen no root para pegar tudo (backdrop + hud + dock)
-      const el = document.documentElement as any;
+      const el = document.documentElement as HTMLElement & {
+        webkitRequestFullscreen?: () => Promise<void>;
+      };
       if (document.fullscreenElement) return;
 
-      const req =
-        el.requestFullscreen ||
-        el.webkitRequestFullscreen ||
-        el.mozRequestFullScreen ||
-        el.msRequestFullscreen;
-
-      if (typeof req === "function") {
-        await req.call(el);
-        setFullscreenHint("Fullscreen ativado ✅");
-        window.setTimeout(() => setFullscreenHint(""), 2500);
+      if (el.requestFullscreen) {
+        await el.requestFullscreen();
+      } else if (el.webkitRequestFullscreen) {
+        await el.webkitRequestFullscreen();
       } else {
-        setFullscreenHint("Esse navegador não suporta fullscreen automático.");
+        setFullscreenHint("Fullscreen indisponível neste navegador.");
+        return;
       }
+      if (isDebug) setFullscreenHint("Fullscreen ativo");
     } catch {
-      setFullscreenHint("Não consegui ativar fullscreen (permissão do navegador).");
+      if (isDebug) setFullscreenHint("Fullscreen bloqueado pelo navegador");
     }
-  }, []);
+  }, [isDebug]);
 
-  // --- Hotkeys (TV friendly)
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      // evita conflito com inputs (se tiver)
-      const t = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
-      if (t === "input" || t === "textarea" || (e.target as any)?.isContentEditable) return;
+    if (!tvMode) return;
+    void onEnterFullscreen();
+  }, [tvMode, onEnterFullscreen]);
 
-      if (e.key.toLowerCase() === "f") {
-        void onEnterFullscreen();
-      }
-      if (e.key.toLowerCase() === "t") {
-        setTvMode((v) => !v);
-      }
-      if (e.key.toLowerCase() === "arrowright") {
-        setScene((s) => ((s + 1) % 4) as SceneId);
-        setLastSync(new Date());
-      }
-      if (e.key.toLowerCase() === "arrowleft") {
-        setScene((s) => ((s + 3) % 4) as SceneId);
-        setLastSync(new Date());
+  useEffect(() => {
+    let alive = true;
+
+    const loadWeather = async () => {
+      try {
+        const r = await fetch("/api/weather", { cache: "no-store" });
+        const data = await r.json();
+        if (alive && data?.ok) setWeather(data.data as WeatherData);
+      } catch {
+        // ignore
       }
     };
 
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onEnterFullscreen]);
+    void loadWeather();
+    const timer = window.setInterval(loadWeather, SIGNAGE_CONFIG.refreshWeatherMs);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
 
-  // --- Ticker (“vibe agência”)
-  const tickerText = useMemo(() => {
-    const parts = [
-      "Bem-vindos ✨",
-      "TV Signage • T.Group",
-      "Perdizes — São Paulo",
-      "Atalhos: [F] fullscreen • [T] TV mode • ←/→ trocar telas",
-    ];
-    // rotaciona um pouco com o tempo
-    const i = Math.floor((now.getTime() / 15000) % parts.length);
-    return parts.slice(i).concat(parts.slice(0, i)).join("  •  ");
+  useEffect(() => {
+    let alive = true;
+
+    const loadNews = async () => {
+      try {
+        const r = await fetch("/api/news", { cache: "no-store" });
+        const data = await r.json();
+        if (alive && data?.ok) setNews((data.items || []) as NewsItem[]);
+      } catch {
+        // ignore
+      }
+    };
+
+    void loadNews();
+    const timer = window.setInterval(loadNews, SIGNAGE_CONFIG.refreshNewsMs);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  const birthdaysState = useMemo(() => {
+    const todayKey = getTodayKey(now);
+    const todayBirthdays = BIRTHDAYS.filter((b) => b.date === todayKey);
+    const monthBirthdays = BIRTHDAYS.filter((b) => Number(b.date.slice(0, 2)) === now.getMonth() + 1).sort((a, b) =>
+      a.date.localeCompare(b.date)
+    );
+
+    const upcoming = BIRTHDAYS.map((b) => ({ ...b, fullDate: parseBirthdayDate(now, b.date) }))
+      .filter((b) => {
+        const diff = b.fullDate.getTime() - now.getTime();
+        return diff >= 0 && diff <= 7 * 24 * 60 * 60 * 1000;
+      })
+      .sort((a, b) => a.fullDate.getTime() - b.fullDate.getTime());
+
+    return { todayBirthdays, monthBirthdays, upcoming };
   }, [now]);
+
+  const tickerText = useMemo(() => {
+    const items = [
+      "T.Group em movimento contínuo.",
+      `${SIGNAGE_CONFIG.locationLabel}.`,
+      weather?.current?.temperature_2m !== undefined
+        ? `Agora: ${Math.round(weather.current.temperature_2m)}°C e ${weatherLabel(weather.current.weather_code)}.`
+        : "Clima em atualização.",
+      news[0]?.title ?? "Manchetes em atualização.",
+      birthdaysState.todayBirthdays.length
+        ? `Hoje celebramos ${birthdaysState.todayBirthdays.map((b) => b.name).join(", ")} 🎉`
+        : "Confira os próximos aniversariantes da semana.",
+    ];
+    return items.join("  •  ");
+  }, [weather, news, birthdaysState, now]);
 
   return (
     <div className="relative min-h-screen w-full bg-black text-white overflow-hidden">
-      {/* Backdrop “vibe agência” atrás de tudo */}
       <AgencyBackdrop />
 
-      {/* Conteúdo real fica acima */}
       <div className="relative z-10">
         <div className="stage">
-          {/* TOP ROW */}
-          <div className={`topRow ${tvMode ? "tvDrift" : ""}`}>
-            <div className={`brand ${tvMode ? "tvDriftAlt" : ""}`}>
-              <div className="brandMark" />
-              <div className="brandText">
-                <div className="name">{SIGNAGE_CONFIG.companyName}</div>
-                <div className="sub">TV Signage • {SIGNAGE_CONFIG.locationLabel}</div>
-              </div>
-            </div>
-
-            <div className={`clock ${tvMode ? "tvDrift" : ""}`}>
+          <div className="topRow">
+            <BrandStrip />
+            <div className="clock tvDrift">
               <div className="time">{formatTimePtBR(now)}</div>
-              <div className="date">{formatDatePtBR(now)}</div>
+              <div className="date capitalize">{formatDatePtBR(now)}</div>
             </div>
           </div>
 
-          {/* TV HUD */}
           {tvMode ? (
             <div className="tvHud tvDriftAlt">
-              <div className="tvStatusPill">
-                TV • {formatTimePtBR(now)} • Sync {lastSync ? formatTimePtBR(lastSync) : "—"}
-              </div>
-
-              <div className="tvHudRight">
-                <button className="tvAction" onClick={onEnterFullscreen} type="button">
-                  Tela cheia
-                </button>
-                <button
-                  className="tvAction ghost"
-                  onClick={() => setTvMode(false)}
-                  type="button"
-                  title="Sair do TV mode"
-                >
-                  Sair
-                </button>
-              </div>
-
+              <div className="tvStatusPill">TV Mode • {formatTimePtBR(now)}</div>
+              {isDebug ? (
+                <>
+                  <button className="tvAction" onClick={onEnterFullscreen} type="button">
+                    Tela cheia
+                  </button>
+                  <button className="tvAction ghost" onClick={() => setTvMode(false)} type="button">
+                    Sair
+                  </button>
+                </>
+              ) : null}
               {fullscreenHint ? <div className="tvHint">{fullscreenHint}</div> : null}
             </div>
           ) : null}
 
-          {/* MAIN */}
           <div className="main">
             <div className="sceneWrap card">
-              {/* Cena 0: Boas-vindas */}
               <div className={`scene ${scene === 0 ? "active" : ""}`}>
-                <h1 className="h1">Bem-vindos 👋</h1>
-                <p className="p">
-                  Uma experiência viva pra recepção: clima, aniversariantes do mês, manchetes e recados — com cara de
-                  agência premium.
-                </p>
-
+                <h1 className="h1">Bem-vindos ao T.Group</h1>
+                <p className="p">Conexões, experiências e cultura viva em um só ecossistema.</p>
                 <div className="kpis">
                   <div className="kpi">
                     <div className="label">Agora</div>
@@ -225,159 +266,143 @@ export default function Page() {
                   </div>
                   <div className="kpi">
                     <div className="label">Local</div>
-                    <div className="value">SP</div>
+                    <div className="value">Perdizes</div>
                   </div>
                   <div className="kpi">
-                    <div className="label">Status</div>
-                    <div className="value">ON</div>
+                    <div className="label">Clima</div>
+                    <div className="value">
+                      {weather?.current?.temperature_2m !== undefined
+                        ? `${Math.round(weather.current.temperature_2m)}°C`
+                        : "--"}
+                    </div>
                   </div>
                 </div>
+              </div>
 
-                <div className="hint">
-                  Dica: abra com <b>?tv=1</b> e aperta <b>F</b> pra fullscreen. Em TV/kiosk, autoplay de áudio pode
-                  pedir 1 clique no “Tocar”.
+              <div className={`scene ${scene === 1 ? "active" : ""}`}>
+                <h2 className="h2">Clima em São Paulo</h2>
+                <div className="grid2">
+                  <div className="kpi">
+                    <div className="label">Condição</div>
+                    <div className="value">{weatherLabel(weather?.current?.weather_code)}</div>
+                  </div>
+                  <div className="list">
+                    <div className="item">
+                      <div className="title">Temperatura</div>
+                      <div className="meta">
+                        {weather?.current?.temperature_2m !== undefined
+                          ? `${Math.round(weather.current.temperature_2m)}°C`
+                          : "--"}
+                      </div>
+                    </div>
+                    <div className="item">
+                      <div className="title">Umidade</div>
+                      <div className="meta">
+                        {weather?.current?.relative_humidity_2m !== undefined
+                          ? `${Math.round(weather.current.relative_humidity_2m)}%`
+                          : "--"}
+                      </div>
+                    </div>
+                    <div className="item">
+                      <div className="title">Vento</div>
+                      <div className="meta">
+                        {weather?.current?.wind_speed_10m !== undefined
+                          ? `${Math.round(weather.current.wind_speed_10m)} km/h`
+                          : "--"}
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Cena 1: Placeholder (você mantém suas cenas atuais no PR2/PR1) */}
-              <div className={`scene ${scene === 1 ? "active" : ""}`}>
-                <h2 className="h2">Clima ☁️</h2>
-                <p className="p">
-                  Se você já tem Weather/News/Birthdays implementados, pode manter como está — o TV Mode aqui não quebra
-                  nada, ele só adiciona HUD + drift + fullscreen + ticker.
-                </p>
-              </div>
-
-              {/* Cena 2 */}
               <div className={`scene ${scene === 2 ? "active" : ""}`}>
-                <h2 className="h2">Aniversariantes 🎂</h2>
-                <p className="p">
-                  Regra que você pediu: se não tiver aniversariante no dia, a tela mostra os aniversariantes do mês.
-                </p>
+                <h2 className="h2">Aniversariantes</h2>
+                {birthdaysState.todayBirthdays.length ? (
+                  <div className="birthdayHero">
+                    {birthdaysState.todayBirthdays.map((birthday: Birthday) => (
+                      <div key={`${birthday.name}-${birthday.date}`} className="birthdayPosterWrap">
+                        <div
+                          className="birthdayPosterBlur"
+                          style={birthday.posterPath ? { backgroundImage: `url(${birthday.posterPath})` } : undefined}
+                        />
+                        {birthday.posterPath && !posterFailures[birthday.posterPath] ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img
+                            src={birthday.posterPath}
+                            alt={birthday.name}
+                            className="birthdayPoster"
+                            onError={() =>
+                              setPosterFailures((prev) => ({ ...prev, [birthday.posterPath as string]: true }))
+                            }
+                          />
+                        ) : (
+                          <div className="birthdayWordmark">{birthday.company}</div>
+                        )}
+                        <div className="birthdayCaption">
+                          <strong>{birthday.name}</strong> • {birthday.company}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="grid2">
+                    <div className="list">
+                      <div className="label">No mês</div>
+                      {birthdaysState.monthBirthdays.map((birthday) => (
+                        <div key={`${birthday.name}-${birthday.date}`} className="item">
+                          <div className="title">{birthday.name}</div>
+                          <div className="meta">
+                            {birthday.date} • {birthday.company}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="list">
+                      <div className="label">Próximos 7 dias</div>
+                      {birthdaysState.upcoming.length ? (
+                        birthdaysState.upcoming.map((birthday) => (
+                          <div key={`${birthday.name}-${birthday.date}`} className="item">
+                            <div className="title">{birthday.name}</div>
+                            <div className="meta">
+                              {birthday.date} • {birthday.company}
+                            </div>
+                          </div>
+                        ))
+                      ) : (
+                        <div className="item">
+                          <div className="title">Agenda tranquila</div>
+                          <div className="meta">Sem aniversários na próxima semana</div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
 
-              {/* Cena 3 */}
               <div className={`scene ${scene === 3 ? "active" : ""}`}>
-                <h2 className="h2">Manchetes 🗞️</h2>
-                <p className="p">
-                  RSS Google News BR (já está no config). Se quiser, depois eu deixo essa tela mais “Bloomberg de
-                  agência”, com cards, categorias e um “breaking bar”.
-                </p>
+                <h2 className="h2">Manchetes</h2>
+                <div className="list">
+                  {news.slice(0, 6).map((item, index) => (
+                    <article key={`${item.title}-${index}`} className="item">
+                      <div className="title">{item.title}</div>
+                      <div className="meta">{item.source || "News"}</div>
+                    </article>
+                  ))}
+                </div>
               </div>
             </div>
           </div>
 
-          {/* FOOTER */}
-          <div className={`footer ${tvMode ? "tvDrift" : ""}`}>
+          <div className="footer tvDrift">
             <div className="ticker">
               <span>{tickerText}</span>
             </div>
-            <div className="pill">{lastSync ? `Sync: ${formatTimePtBR(lastSync)}` : "Sync: —"}</div>
+            <div className="pill">Sync: {lastSync ? formatTimePtBR(lastSync) : "--"}</div>
           </div>
         </div>
 
-        {/* Dock de música (fixo na tela) */}
-        <MusicDock />
+        <MusicDock tvMode={tvMode} />
       </div>
-
-      {/* CSS extra pra TV mode + HUD + drift (sem depender do resto do projeto) */}
-      <style jsx global>{`
-        .tgroup-tvmode,
-        .tgroup-tvmode body {
-          cursor: none;
-          overscroll-behavior: none;
-        }
-
-        .tvHud {
-          position: absolute;
-          top: 18px;
-          right: 18px;
-          display: flex;
-          flex-direction: column;
-          gap: 10px;
-          align-items: flex-end;
-          z-index: 30;
-          pointer-events: auto;
-        }
-
-        .tvHudRight {
-          display: flex;
-          gap: 10px;
-          align-items: center;
-          justify-content: flex-end;
-        }
-
-        .tvStatusPill {
-          font-size: 12px;
-          letter-spacing: 0.18em;
-          text-transform: uppercase;
-          padding: 10px 12px;
-          border-radius: 999px;
-          border: 1px solid rgba(255, 255, 255, 0.16);
-          background: rgba(0, 0, 0, 0.35);
-          backdrop-filter: blur(10px);
-        }
-
-        .tvAction {
-          height: 40px;
-          padding: 0 14px;
-          border-radius: 14px;
-          border: 1px solid rgba(255, 255, 255, 0.18);
-          background: rgba(255, 255, 255, 0.12);
-          color: white;
-          font-weight: 700;
-          font-size: 12px;
-          letter-spacing: 0.08em;
-          text-transform: uppercase;
-        }
-
-        .tvAction:hover {
-          background: rgba(255, 255, 255, 0.18);
-        }
-
-        .tvAction.ghost {
-          background: rgba(0, 0, 0, 0.25);
-        }
-
-        .tvHint {
-          font-size: 12px;
-          opacity: 0.8;
-          max-width: 320px;
-          text-align: right;
-        }
-
-        /* drift suave pra dar “vida” na TV */
-        .tvDrift {
-          animation: tgroupDrift 22s ease-in-out infinite;
-        }
-        .tvDriftAlt {
-          animation: tgroupDriftAlt 26s ease-in-out infinite;
-        }
-
-        @keyframes tgroupDrift {
-          0% {
-            transform: translate3d(0, 0, 0);
-          }
-          50% {
-            transform: translate3d(8px, -6px, 0);
-          }
-          100% {
-            transform: translate3d(0, 0, 0);
-          }
-        }
-
-        @keyframes tgroupDriftAlt {
-          0% {
-            transform: translate3d(0, 0, 0);
-          }
-          50% {
-            transform: translate3d(-10px, 7px, 0);
-          }
-          100% {
-            transform: translate3d(0, 0, 0);
-          }
-        }
-      `}</style>
     </div>
   );
 }
