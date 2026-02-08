@@ -1,29 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import AgencyBackdrop from "@/components/AgencyBackdrop";
 import MusicDock from "@/components/MusicDock";
 import { SIGNAGE_CONFIG } from "@/config";
 
-type WeatherState =
-  | {
-      ok: true;
-      tempC: number;
-      humidity: number;
-      windKmh: number;
-      code: number;
-      source: string;
-    }
-  | { ok: false; error: string; source: string };
-
-type NewsItem = {
-  title: string;
-  link: string;
-  pubDate: string;
-  source: string;
-};
-
-type Birthday = { name: string; month: number; day: number; team?: string };
-
+/**
+ * Helpers (PT-BR)
+ */
+function formatTimePtBR(d: Date) {
+  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
 function formatDatePtBR(d: Date) {
   return d.toLocaleDateString("pt-BR", {
     weekday: "long",
@@ -33,401 +20,364 @@ function formatDatePtBR(d: Date) {
   });
 }
 
-function formatTimePtBR(d: Date) {
-  return d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
-function pad2(n: number) {
-  return String(n).padStart(2, "0");
-}
-
-function weatherLabel(code: number) {
-  if ([0].includes(code)) return "Céu limpo";
-  if ([1, 2, 3].includes(code)) return "Parcialmente nublado";
-  if ([45, 48].includes(code)) return "Neblina";
-  if ([51, 53, 55, 56, 57].includes(code)) return "Garoa";
-  if ([61, 63, 65, 66, 67].includes(code)) return "Chuva";
-  if ([71, 73, 75, 77].includes(code)) return "Neve";
-  if ([80, 81, 82].includes(code)) return "Pancadas";
-  if ([95, 96, 99].includes(code)) return "Tempestade";
-  return "Tempo";
-}
+type SceneId = 0 | 1 | 2 | 3;
 
 export default function Page() {
-  const [tvMode, setTvMode] = useState(false);
-  const [fullscreenHint, setFullscreenHint] = useState<string | null>(null);
-  const [now, setNow] = useState(new Date());
-  const [scene, setScene] = useState(0);
+  const [now, setNow] = useState(() => new Date());
+  const [scene, setScene] = useState<SceneId>(0);
 
-  const [weather, setWeather] = useState<WeatherState>({
-    ok: false,
-    error: "carregando…",
-    source: "open-meteo",
-  });
-
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [birthdays, setBirthdays] = useState<Birthday[]>([]);
+  // “sync” — atualiza quando a cena gira (ou quando você quiser amarrar em refresh de dados)
   const [lastSync, setLastSync] = useState<Date | null>(null);
 
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const tvParam = params.get("tv");
-    const tvFromQuery = tvParam === "1";
-    const tvFromStorage = window.localStorage.getItem("tvMode") === "1";
-    const isTvMode = tvParam !== null ? tvFromQuery : tvFromStorage;
+  // TV mode (kiosk-friendly)
+  const [tvMode, setTvMode] = useState(false);
+  const [fullscreenHint, setFullscreenHint] = useState<string>("");
 
-    setTvMode(isTvMode);
-    document.body.classList.toggle("tv-mode", isTvMode);
-    window.localStorage.setItem("tvMode", isTvMode ? "1" : "0");
+  const tickRef = useRef<number | null>(null);
+
+  // --- Clock tick
+  useEffect(() => {
+    const t = window.setInterval(() => setNow(new Date()), 1000);
+    return () => window.clearInterval(t);
+  }, []);
+
+  // --- Scene rotation
+  useEffect(() => {
+    // evita múltiplos intervals
+    if (tickRef.current) window.clearInterval(tickRef.current);
+
+    const ms = Math.max(6000, Number(SIGNAGE_CONFIG.sceneDurationMs || 12000));
+    tickRef.current = window.setInterval(() => {
+      setScene((s) => ((s + 1) % 4) as SceneId);
+      setLastSync(new Date());
+    }, ms);
 
     return () => {
-      document.body.classList.remove("tv-mode", "tv-cursor-hidden");
+      if (tickRef.current) window.clearInterval(tickRef.current);
+      tickRef.current = null;
     };
   }, []);
 
+  // --- Load TV mode preference (query param + localStorage)
   useEffect(() => {
-    if (!tvMode) {
-      document.body.classList.remove("tv-cursor-hidden");
-      return;
+    try {
+      const url = new URL(window.location.href);
+      const q = url.searchParams.get("tv");
+      const forced = q === "1" || q === "true";
+
+      const saved = localStorage.getItem("tgroup_tv_mode");
+      const savedOn = saved === "1";
+
+      const initial = forced || savedOn;
+      setTvMode(initial);
+    } catch {
+      // ignore
     }
+  }, []);
 
-    let hideCursorTimeout = window.setTimeout(() => {
-      document.body.classList.add("tv-cursor-hidden");
-    }, 3000);
+  // --- Apply TV mode UX (hide cursor, reduce scroll, etc.)
+  useEffect(() => {
+    const cls = "tgroup-tvmode";
+    if (tvMode) document.documentElement.classList.add(cls);
+    else document.documentElement.classList.remove(cls);
 
-    const onPointerMove = () => {
-      document.body.classList.remove("tv-cursor-hidden");
-      window.clearTimeout(hideCursorTimeout);
-      hideCursorTimeout = window.setTimeout(() => {
-        document.body.classList.add("tv-cursor-hidden");
-      }, 3000);
-    };
-
-    const preventDefault = (event: Event) => event.preventDefault();
-    const preventKeyboardScroll = (event: KeyboardEvent) => {
-      const blockedKeys = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "PageUp", "PageDown", " "];
-      if (blockedKeys.includes(event.key)) event.preventDefault();
-    };
-
-    window.addEventListener("pointermove", onPointerMove, { passive: true });
-    window.addEventListener("wheel", preventDefault, { passive: false });
-    window.addEventListener("touchmove", preventDefault, { passive: false });
-    window.addEventListener("keydown", preventKeyboardScroll, { passive: false });
-
-    return () => {
-      window.clearTimeout(hideCursorTimeout);
-      document.body.classList.remove("tv-cursor-hidden");
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("wheel", preventDefault);
-      window.removeEventListener("touchmove", preventDefault);
-      window.removeEventListener("keydown", preventKeyboardScroll);
-    };
+    try {
+      localStorage.setItem("tgroup_tv_mode", tvMode ? "1" : "0");
+    } catch {
+      // ignore
+    }
   }, [tvMode]);
 
-  async function onEnterFullscreen() {
-    setFullscreenHint(null);
+  // --- Fullscreen helper
+  const onEnterFullscreen = useCallback(async () => {
+    setFullscreenHint("");
     try {
-      if (!document.fullscreenEnabled) {
-        setFullscreenHint("Seu navegador bloqueou fullscreen. Use F11 ou menu do navegador.");
-        return;
+      // Prefer a fullscreen no root para pegar tudo (backdrop + hud + dock)
+      const el = document.documentElement as any;
+      if (document.fullscreenElement) return;
+
+      const req =
+        el.requestFullscreen ||
+        el.webkitRequestFullscreen ||
+        el.mozRequestFullScreen ||
+        el.msRequestFullscreen;
+
+      if (typeof req === "function") {
+        await req.call(el);
+        setFullscreenHint("Fullscreen ativado ✅");
+        window.setTimeout(() => setFullscreenHint(""), 2500);
+      } else {
+        setFullscreenHint("Esse navegador não suporta fullscreen automático.");
       }
-      await document.documentElement.requestFullscreen();
     } catch {
-      setFullscreenHint("Não foi possível entrar em fullscreen. Tente F11 ou menu do navegador.");
+      setFullscreenHint("Não consegui ativar fullscreen (permissão do navegador).");
     }
-  }
-
-  // relógio
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
   }, []);
 
-  // rotação
+  // --- Hotkeys (TV friendly)
   useEffect(() => {
-    const t = setInterval(() => {
-      setScene((s) => (s + 1) % 4);
-    }, SIGNAGE_CONFIG.sceneDurationMs);
-    return () => clearInterval(t);
-  }, []);
+    const onKey = (e: KeyboardEvent) => {
+      // evita conflito com inputs (se tiver)
+      const t = (e.target as HTMLElement | null)?.tagName?.toLowerCase();
+      if (t === "input" || t === "textarea" || (e.target as any)?.isContentEditable) return;
 
-  // carga de dados
-  useEffect(() => {
-    let alive = true;
-
-    async function loadAll() {
-      try {
-        const [w, n, b] = await Promise.all([
-          fetch("/api/weather", { cache: "no-store" }).then((r) => r.json()),
-          fetch("/api/news", { cache: "no-store" }).then((r) => r.json()),
-          fetch("/api/birthdays", { cache: "no-store" }).then((r) => r.json()),
-        ]);
-
-        if (!alive) return;
-
-        if (w?.ok && w?.data?.current) {
-          const c = w.data.current;
-          setWeather({
-            ok: true,
-            tempC: Number(c.temperature_2m ?? 0),
-            humidity: Number(c.relative_humidity_2m ?? 0),
-            windKmh: Number(c.wind_speed_10m ?? 0),
-            code: Number(c.weather_code ?? 0),
-            source: "open-meteo",
-          });
-        } else {
-          setWeather({
-            ok: false,
-            error: w?.error ?? "Falha no clima",
-            source: "open-meteo",
-          });
-        }
-
-        if (n?.ok && Array.isArray(n.items)) {
-          setNews(n.items as NewsItem[]);
-        } else {
-          setNews([]);
-        }
-
-        if (b?.ok && Array.isArray(b.birthdays)) {
-          setBirthdays(b.birthdays as Birthday[]);
-        } else {
-          setBirthdays([]);
-        }
-
-        setLastSync(new Date());
-      } catch {
-        if (!alive) return;
-        setWeather({
-          ok: false,
-          error: "Sem conexão com as APIs",
-          source: "open-meteo",
-        });
-        setNews([]);
+      if (e.key.toLowerCase() === "f") {
+        void onEnterFullscreen();
       }
-    }
-
-    loadAll();
-
-    const tw = setInterval(loadAll, SIGNAGE_CONFIG.refreshWeatherMs);
-    const tn = setInterval(loadAll, SIGNAGE_CONFIG.refreshNewsMs);
-
-    return () => {
-      alive = false;
-      clearInterval(tw);
-      clearInterval(tn);
+      if (e.key.toLowerCase() === "t") {
+        setTvMode((v) => !v);
+      }
+      if (e.key.toLowerCase() === "arrowright") {
+        setScene((s) => ((s + 1) % 4) as SceneId);
+        setLastSync(new Date());
+      }
+      if (e.key.toLowerCase() === "arrowleft") {
+        setScene((s) => ((s + 3) % 4) as SceneId);
+        setLastSync(new Date());
+      }
     };
-  }, []);
 
-  const birthdaysOfMonth = useMemo(() => {
-    const m = now.getMonth() + 1;
-    return birthdays
-      .filter((x) => x.month === m)
-      .sort((a, b) => a.day - b.day);
-  }, [birthdays, now]);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onEnterFullscreen]);
 
-  const todayBirthdays = useMemo(() => {
-    const m = now.getMonth() + 1;
-    const d = now.getDate();
-    return birthdays.filter((x) => x.month === m && x.day === d);
-  }, [birthdays, now]);
-
+  // --- Ticker (“vibe agência”)
   const tickerText = useMemo(() => {
-    const pieces: string[] = [];
-    pieces.push(`${SIGNAGE_CONFIG.companyName} — ${SIGNAGE_CONFIG.locationLabel}`);
-    if (weather.ok) pieces.push(`${Math.round(weather.tempC)}°C • ${weatherLabel(weather.code)}`);
-    if (birthdaysOfMonth.length) {
-      pieces.push(
-        `Aniversariantes do mês: ${birthdaysOfMonth
-          .slice(0, 12)
-          .map((b) => `${b.name} (${pad2(b.day)}/${pad2(b.month)})`)
-          .join(" • ")}`
-      );
-    }
-    if (news.length) pieces.push(`Manchetes: ${news.slice(0, 6).map((n) => n.title).join(" • ")}`);
-    return pieces.join("  —  ");
-  }, [weather, birthdaysOfMonth, news]);
+    const parts = [
+      "Bem-vindos ✨",
+      "TV Signage • T.Group",
+      "Perdizes — São Paulo",
+      "Atalhos: [F] fullscreen • [T] TV mode • ←/→ trocar telas",
+    ];
+    // rotaciona um pouco com o tempo
+    const i = Math.floor((now.getTime() / 15000) % parts.length);
+    return parts.slice(i).concat(parts.slice(0, i)).join("  •  ");
+  }, [now]);
 
   return (
-    <div className="stage">
-      {/* Dock fixo de música (Radio Browser). Fica por cima e você liga quando quiser */}
-      <MusicDock />
+    <div className="relative min-h-screen w-full bg-black text-white overflow-hidden">
+      {/* Backdrop “vibe agência” atrás de tudo */}
+      <AgencyBackdrop />
 
-      <div className="topRow tvDrift">
-        <div className="brand tvDriftAlt">
-          <div className="brandMark" />
-          <div className="brandText">
-            <div className="name">{SIGNAGE_CONFIG.companyName}</div>
-            <div className="sub">TV Signage • {SIGNAGE_CONFIG.locationLabel}</div>
+      {/* Conteúdo real fica acima */}
+      <div className="relative z-10">
+        <div className="stage">
+          {/* TOP ROW */}
+          <div className={`topRow ${tvMode ? "tvDrift" : ""}`}>
+            <div className={`brand ${tvMode ? "tvDriftAlt" : ""}`}>
+              <div className="brandMark" />
+              <div className="brandText">
+                <div className="name">{SIGNAGE_CONFIG.companyName}</div>
+                <div className="sub">TV Signage • {SIGNAGE_CONFIG.locationLabel}</div>
+              </div>
+            </div>
+
+            <div className={`clock ${tvMode ? "tvDrift" : ""}`}>
+              <div className="time">{formatTimePtBR(now)}</div>
+              <div className="date">{formatDatePtBR(now)}</div>
+            </div>
+          </div>
+
+          {/* TV HUD */}
+          {tvMode ? (
+            <div className="tvHud tvDriftAlt">
+              <div className="tvStatusPill">
+                TV • {formatTimePtBR(now)} • Sync {lastSync ? formatTimePtBR(lastSync) : "—"}
+              </div>
+
+              <div className="tvHudRight">
+                <button className="tvAction" onClick={onEnterFullscreen} type="button">
+                  Tela cheia
+                </button>
+                <button
+                  className="tvAction ghost"
+                  onClick={() => setTvMode(false)}
+                  type="button"
+                  title="Sair do TV mode"
+                >
+                  Sair
+                </button>
+              </div>
+
+              {fullscreenHint ? <div className="tvHint">{fullscreenHint}</div> : null}
+            </div>
+          ) : null}
+
+          {/* MAIN */}
+          <div className="main">
+            <div className="sceneWrap card">
+              {/* Cena 0: Boas-vindas */}
+              <div className={`scene ${scene === 0 ? "active" : ""}`}>
+                <h1 className="h1">Bem-vindos 👋</h1>
+                <p className="p">
+                  Uma experiência viva pra recepção: clima, aniversariantes do mês, manchetes e recados — com cara de
+                  agência premium.
+                </p>
+
+                <div className="kpis">
+                  <div className="kpi">
+                    <div className="label">Agora</div>
+                    <div className="value">{formatTimePtBR(now)}</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="label">Local</div>
+                    <div className="value">SP</div>
+                  </div>
+                  <div className="kpi">
+                    <div className="label">Status</div>
+                    <div className="value">ON</div>
+                  </div>
+                </div>
+
+                <div className="hint">
+                  Dica: abra com <b>?tv=1</b> e aperta <b>F</b> pra fullscreen. Em TV/kiosk, autoplay de áudio pode
+                  pedir 1 clique no “Tocar”.
+                </div>
+              </div>
+
+              {/* Cena 1: Placeholder (você mantém suas cenas atuais no PR2/PR1) */}
+              <div className={`scene ${scene === 1 ? "active" : ""}`}>
+                <h2 className="h2">Clima ☁️</h2>
+                <p className="p">
+                  Se você já tem Weather/News/Birthdays implementados, pode manter como está — o TV Mode aqui não quebra
+                  nada, ele só adiciona HUD + drift + fullscreen + ticker.
+                </p>
+              </div>
+
+              {/* Cena 2 */}
+              <div className={`scene ${scene === 2 ? "active" : ""}`}>
+                <h2 className="h2">Aniversariantes 🎂</h2>
+                <p className="p">
+                  Regra que você pediu: se não tiver aniversariante no dia, a tela mostra os aniversariantes do mês.
+                </p>
+              </div>
+
+              {/* Cena 3 */}
+              <div className={`scene ${scene === 3 ? "active" : ""}`}>
+                <h2 className="h2">Manchetes 🗞️</h2>
+                <p className="p">
+                  RSS Google News BR (já está no config). Se quiser, depois eu deixo essa tela mais “Bloomberg de
+                  agência”, com cards, categorias e um “breaking bar”.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* FOOTER */}
+          <div className={`footer ${tvMode ? "tvDrift" : ""}`}>
+            <div className="ticker">
+              <span>{tickerText}</span>
+            </div>
+            <div className="pill">{lastSync ? `Sync: ${formatTimePtBR(lastSync)}` : "Sync: —"}</div>
           </div>
         </div>
 
-        <div className="clock tvDrift">
-          <div className="time">{formatTimePtBR(now)}</div>
-          <div className="date">{formatDatePtBR(now)}</div>
-        </div>
+        {/* Dock de música (fixo na tela) */}
+        <MusicDock />
       </div>
 
-      {tvMode ? (
-        <div className="tvHud tvDriftAlt">
-          <div className="tvStatusPill">TV • {formatTimePtBR(now)} • Sync {lastSync ? formatTimePtBR(lastSync) : "—"}</div>
-          <button className="tvAction" onClick={onEnterFullscreen} type="button">
-            Tela cheia
-          </button>
-          {fullscreenHint ? <div className="tvHint">{fullscreenHint}</div> : null}
-        </div>
-      ) : null}
+      {/* CSS extra pra TV mode + HUD + drift (sem depender do resto do projeto) */}
+      <style jsx global>{`
+        .tgroup-tvmode,
+        .tgroup-tvmode body {
+          cursor: none;
+          overscroll-behavior: none;
+        }
 
-      <div className="main">
-        <div className="sceneWrap card">
-          {/* Cena 0: Boas-vindas */}
-          <div className={`scene ${scene === 0 ? "active" : ""}`}>
-            <h1 className="h1">Bem-vindos 👋</h1>
-            <p className="p">
-              Uma experiência viva para recepção: clima, aniversariantes do mês, manchetes e recados — com cara de
-              prédio premium.
-            </p>
+        .tvHud {
+          position: absolute;
+          top: 18px;
+          right: 18px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          align-items: flex-end;
+          z-index: 30;
+          pointer-events: auto;
+        }
 
-            <div className="kpis">
-              <div className="kpi">
-                <div className="label">Agora</div>
-                <div className="value">{formatTimePtBR(now)}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Local</div>
-                <div className="value">SP</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Status</div>
-                <div className="value">ON</div>
-              </div>
-            </div>
-          </div>
+        .tvHudRight {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          justify-content: flex-end;
+        }
 
-          {/* Cena 1: Clima */}
-          <div className={`scene ${scene === 1 ? "active" : ""}`}>
-            <h1 className="h1">Clima agora</h1>
-            <p className="p">Atualiza automaticamente. Ótimo pra entrada/saída e dia de evento.</p>
+        .tvStatusPill {
+          font-size: 12px;
+          letter-spacing: 0.18em;
+          text-transform: uppercase;
+          padding: 10px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.16);
+          background: rgba(0, 0, 0, 0.35);
+          backdrop-filter: blur(10px);
+        }
 
-            <div className="kpis">
-              <div className="kpi">
-                <div className="label">Temperatura</div>
-                <div className="value">{weather.ok ? `${Math.round(weather.tempC)}°C` : "—"}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Umidade</div>
-                <div className="value">{weather.ok ? `${Math.round(weather.humidity)}%` : "—"}</div>
-              </div>
-              <div className="kpi">
-                <div className="label">Vento</div>
-                <div className="value">{weather.ok ? `${Math.round(weather.windKmh)} km/h` : "—"}</div>
-              </div>
-            </div>
+        .tvAction {
+          height: 40px;
+          padding: 0 14px;
+          border-radius: 14px;
+          border: 1px solid rgba(255, 255, 255, 0.18);
+          background: rgba(255, 255, 255, 0.12);
+          color: white;
+          font-weight: 700;
+          font-size: 12px;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        }
 
-            <div className="item">
-              <div>
-                <div className="title">
-                  {weather.ok ? weatherLabel(weather.code) : "Sem dados no momento"}
-                </div>
-                <div className="meta">
-                  {weather.ok ? `Fonte: ${weather.source}` : (weather as any).error}
-                </div>
-              </div>
-              <div className="pill">Auto</div>
-            </div>
-          </div>
+        .tvAction:hover {
+          background: rgba(255, 255, 255, 0.18);
+        }
 
-          {/* Cena 2: Aniversariantes */}
-          <div className={`scene ${scene === 2 ? "active" : ""}`}>
-            <h1 className="h1">Aniversariantes do mês 🎂</h1>
-            <p className="p">
-              Mesmo se hoje não tiver ninguém, a TV mantém o clima bom mostrando o mês inteiro.
-            </p>
+        .tvAction.ghost {
+          background: rgba(0, 0, 0, 0.25);
+        }
 
-            <div className="grid2">
-              <div className="card" style={{ height: "100%" }}>
-                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
-                  Hoje
-                </div>
+        .tvHint {
+          font-size: 12px;
+          opacity: 0.8;
+          max-width: 320px;
+          text-align: right;
+        }
 
-                {todayBirthdays.length ? (
-                  <div className="list">
-                    {todayBirthdays.map((b) => (
-                      <div className="item" key={`${b.name}-${b.day}-${b.month}`}>
-                        <div className="title">{b.name}</div>
-                        <div className="meta">{b.team ?? "—"}</div>
-                      </div>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="item">
-                    <div>
-                      <div className="title">Sem aniversariantes hoje</div>
-                      <div className="meta">Mas o mês tá cheio — olha do lado 😉</div>
-                    </div>
-                    <div className="pill">Mês</div>
-                  </div>
-                )}
-              </div>
+        /* drift suave pra dar “vida” na TV */
+        .tvDrift {
+          animation: tgroupDrift 22s ease-in-out infinite;
+        }
+        .tvDriftAlt {
+          animation: tgroupDriftAlt 26s ease-in-out infinite;
+        }
 
-              <div className="card" style={{ height: "100%" }}>
-                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
-                  No mês
-                </div>
+        @keyframes tgroupDrift {
+          0% {
+            transform: translate3d(0, 0, 0);
+          }
+          50% {
+            transform: translate3d(8px, -6px, 0);
+          }
+          100% {
+            transform: translate3d(0, 0, 0);
+          }
+        }
 
-                <div className="list">
-                  {birthdaysOfMonth.length ? (
-                    birthdaysOfMonth.slice(0, 10).map((b) => (
-                      <div className="item" key={`${b.name}-${b.day}-${b.month}`}>
-                        <div className="title">{b.name}</div>
-                        <div className="meta">
-                          {pad2(b.day)}/{pad2(b.month)} • {b.team ?? "—"}
-                        </div>
-                      </div>
-                    ))
-                  ) : (
-                    <div className="item">
-                      <div className="title">Sem dados do mês</div>
-                      <div className="meta">Depois a gente liga no Google Sheets.</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Cena 3: Notícias */}
-          <div className={`scene ${scene === 3 ? "active" : ""}`}>
-            <h1 className="h1">Manchetes</h1>
-            <p className="p">Giro rápido só pra manter a recepção com energia de “prédio premium”.</p>
-
-            <div className="list" style={{ marginTop: 10 }}>
-              {news.length ? (
-                news.slice(0, 10).map((n, idx) => (
-                  <div className="item" key={`${idx}-${n.title}`}>
-                    <div className="title">{n.title}</div>
-                    <div className="meta">{n.source || "Google News"}</div>
-                  </div>
-                ))
-              ) : (
-                <div className="item">
-                  <div className="title">Sem manchetes no momento</div>
-                  <div className="meta">Quando voltar a conexão, preenche sozinho.</div>
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="footer tvDrift">
-          <div className="ticker">
-            <span>{tickerText}</span>
-          </div>
-          <div className="pill">
-            {lastSync ? `Sync: ${formatTimePtBR(lastSync)}` : "Sync: —"}
-          </div>
-        </div>
-      </div>
+        @keyframes tgroupDriftAlt {
+          0% {
+            transform: translate3d(0, 0, 0);
+          }
+          50% {
+            transform: translate3d(-10px, 7px, 0);
+          }
+          100% {
+            transform: translate3d(0, 0, 0);
+          }
+        }
+      `}</style>
     </div>
   );
 }
