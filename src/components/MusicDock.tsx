@@ -423,7 +423,11 @@ export function MusicDock() {
         </div>
       </div>
     </div>
+    import { toRadioProfileId } from "@/lib/radio";
+
+const [profile, setProfile] = useState<RadioProfileId>(() =>
+  toRadioProfileId(SIGNAGE_CONFIG.audio?.defaultProfile)
+);
+
   );
 }
-
-export default MusicDock;
