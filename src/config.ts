@@ -31,6 +31,9 @@ export const SIGNAGE_CONFIG = {
     { mmdd: "2102", src: "/birthdays/2102_BDAY_ANALU_TB.png", label: "Analu" },
   ],
 
+  // Texto do ticker quando ainda não carregou notícias
+  defaultTicker: "Bem-vindos ao T.Group • Segurança e respeito sempre • Bom trabalho, time •",
+
   // News RSS (Google News BR)
   // Formato padrão do RSS do Google News com parâmetros hl/gl/ceid.
   newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
