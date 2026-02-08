@@ -1,55 +1,66 @@
 "use client";
 
-import { useEffect, useState } from "react";
+type NewsItem = {
+  title: string;
+  url?: string;
+  source?: string;
+  publishedAt?: string;
+};
 
-type Article = { title: string; url: string; source?: string };
-type News = { articles: Article[] };
+function formatDateBR(iso?: string) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+}
 
-export default function NewsScene() {
-  const [data, setData] = useState<News | null>(null);
-
-  useEffect(() => {
-    let alive = true;
-
-    async function load() {
-      const r = await fetch("/api/news", { cache: "no-store" });
-      if (!r.ok) return;
-      const json = (await r.json()) as News;
-      if (alive) setData(json);
-    }
-
-    load();
-    const t = setInterval(load, 30 * 60 * 1000); // 30 min
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
-  }, []);
+export default function NewsScene({ items }: { items: NewsItem[] }) {
+  const safeItems = Array.isArray(items) ? items : [];
 
   return (
-    <section className="h-full w-full p-14 flex flex-col">
-      <div className="flex items-baseline justify-between">
-        <div className="text-5xl font-semibold">Notícias</div>
-        <div className="text-lg opacity-60">Manchetes em rotação</div>
+    <section className="h-full w-full flex flex-col p-10">
+      <div className="flex items-end justify-between gap-6">
+        <div>
+          <div className="text-sm opacity-60">Atualiza automaticamente</div>
+          <h2 className="text-5xl font-semibold tracking-tight">Notícias</h2>
+        </div>
+
+        <div className="text-sm opacity-60 text-right">
+          <div>Brasil + Mundo</div>
+          <div className="opacity-80">Fonte: GDELT (open data)</div>
+        </div>
       </div>
 
-      <div className="mt-10 space-y-5">
-        {(data?.articles ?? []).slice(0, 8).map((a) => (
-          <div
-            key={a.url}
-            className="rounded-3xl border border-white/10 bg-white/5 p-7"
+      <div className="mt-8 grid grid-cols-2 gap-6">
+        {safeItems.slice(0, 10).map((n, i) => (
+          <article
+            key={`${n.title}-${i}`}
+            className="rounded-3xl border border-white/10 bg-white/5 backdrop-blur-xl p-6"
           >
-            <div className="text-2xl font-semibold leading-snug">{a.title}</div>
-            <div className="mt-2 text-sm opacity-60 truncate">{a.url}</div>
-          </div>
+            <div className="flex items-center justify-between gap-4">
+              <div className="text-xs opacity-60 truncate">
+                {n.source ?? "Fonte"}
+              </div>
+              <div className="text-xs opacity-50 whitespace-nowrap">
+                {formatDateBR(n.publishedAt)}
+              </div>
+            </div>
+
+            <div className="mt-3 text-2xl font-medium leading-snug">
+              {n.title}
+            </div>
+
+            {n.url ? (
+              <div className="mt-4 text-xs opacity-60 break-all">
+                {n.url}
+              </div>
+            ) : null}
+          </article>
         ))}
-        {!data && (
-          <div className="text-xl opacity-70">Carregando manchetes…</div>
-        )}
       </div>
 
-      <div className="mt-auto text-sm opacity-60">
-        Fonte: GDELT (open data) :contentReference[oaicite:9]{index=9}
+      <div className="mt-auto pt-6 text-sm opacity-60">
+        Dica: se você colar código aqui do chat, cole apenas o que estiver dentro do bloco ``` ``` pra evitar “lixo” de citação.
       </div>
     </section>
   );
