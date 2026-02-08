@@ -307,3 +307,21 @@ export default function Page() {
     </div>
   );
 }
+import MusicDock from "@/components/MusicDock";
+
+export default function Page() {
+  return (
+    <main className="min-h-screen w-full bg-black text-white">
+      {/* Seu conteúdo/rotina de cenas aqui */}
+      <div className="p-10">
+        <h1 className="text-4xl font-semibold">T.Group • TV Signage</h1>
+        <p className="opacity-70 mt-2">
+          Deixa essa aba aberta na TV (kiosk/fullscreen) e pronto.
+        </p>
+      </div>
+
+      <MusicDock />
+    </main>
+  );
+}
+
