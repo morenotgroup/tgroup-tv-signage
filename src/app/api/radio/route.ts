@@ -12,6 +12,7 @@ type RawStation = {
   country?: string;
   codec?: string;
   bitrate?: number;
+  lastcheckok?: number;
 };
 
 type Station = {
@@ -31,10 +32,19 @@ const MIRRORS = [
   "https://all.api.radio-browser.info",
 ];
 
-const PROFILE_TAGS: Record<RadioProfileId, string[]> = {
-  agency: ["dance", "electronic", "house", "pop", "hits", "top 40"],
-  focus: ["lofi", "study", "focus", "ambient", "downtempo"],
-  chill: ["chill", "lounge", "relax", "chillout", "ambient"],
+const PROFILE_TAGS: Record<RadioProfileId, { label: string; tags: string[] }> = {
+  agency: {
+    label: "Agência",
+    tags: ["dance", "electronic", "house", "pop", "hits", "top 40"],
+  },
+  focus: {
+    label: "Focus",
+    tags: ["lofi", "study", "focus", "ambient", "downtempo"],
+  },
+  chill: {
+    label: "Chill",
+    tags: ["chill", "lounge", "relax", "chillout", "ambient"],
+  },
 };
 
 function normProfile(p: string | null): RadioProfileId {
@@ -50,13 +60,14 @@ function safeStr(x: unknown) {
   return typeof x === "string" ? x.trim() : "";
 }
 
-function isHttpUrl(s: string) {
-  return s.startsWith("http://") || s.startsWith("https://");
+function isHttpsUrl(s: string) {
+  return s.startsWith("https://");
 }
 
-async function fetchJson(url: string, timeoutMs = 7000) {
+async function fetchJson(url: string, timeoutMs = 8000) {
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
   try {
     const r = await fetch(url, {
       signal: ctrl.signal,
@@ -85,27 +96,33 @@ function uniqById(items: Station[]) {
 }
 
 async function queryStations(base: string, profile: RadioProfileId, limit: number) {
-  const tags = PROFILE_TAGS[profile];
+  const tags = PROFILE_TAGS[profile].tags;
   const perTag = Math.max(10, Math.ceil(limit / Math.max(1, tags.length)));
 
   const collected: Station[] = [];
 
   for (const tag of tags) {
     const u = new URL("/json/stations/search", base);
-    u.searchParams.set("limit", String(perTag));
     u.searchParams.set("hidebroken", "true");
-    u.searchParams.set("order", "clickcount");
+    u.searchParams.set("order", "votes");
     u.searchParams.set("reverse", "true");
+    u.searchParams.set("limit", String(perTag));
     u.searchParams.set("tag", tag);
 
-    const raw = await fetchJson(u.toString(), 7000);
+    const raw = await fetchJson(u.toString(), 8000);
 
     for (const s of raw) {
       const id = safeStr(s.stationuuid);
       const name = safeStr(s.name);
       const streamUrl = safeStr(s.url_resolved);
+
       if (!id || !name || !streamUrl) continue;
-      if (!isHttpUrl(streamUrl)) continue;
+
+      // só deixa passar streams HTTPS (evita bloqueio de mixed content em domínio https://vercel)
+      if (!isHttpsUrl(streamUrl)) continue;
+
+      // se tiver lastcheckok, respeita quando for “ok”
+      if (typeof s.lastcheckok === "number" && s.lastcheckok !== 1) continue;
 
       collected.push({
         id,
@@ -127,15 +144,22 @@ export async function GET(req: Request) {
   const profile = normProfile(url.searchParams.get("profile"));
   const limit = clamp(Number(url.searchParams.get("limit") || "80"), 10, 120);
 
+  const { label } = PROFILE_TAGS[profile];
+
   let lastErr = "Falha desconhecida";
 
   for (const base of MIRRORS) {
     try {
       const stations = await queryStations(base, profile, limit);
+
+      // se um mirror retornar vazio, tenta o próximo
+      if (!stations.length) continue;
+
       return NextResponse.json(
         {
           ok: true,
           profile,
+          label,
           count: stations.length,
           stations,
           source: base,
@@ -152,11 +176,12 @@ export async function GET(req: Request) {
     {
       ok: false,
       profile,
+      label,
       count: 0,
       stations: [],
       source: "mirrors",
       error: lastErr,
     },
-    { headers: { "Cache-Control": "no-store, max-age=0" } }
+    { status: 502, headers: { "Cache-Control": "no-store, max-age=0" } }
   );
 }
