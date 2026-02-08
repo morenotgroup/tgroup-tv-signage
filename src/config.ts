@@ -25,12 +25,37 @@ export const SIGNAGE_CONFIG = {
 
   // ✅ V2/V3 também podem usar esses campos
   groupLogoSrc: "/logos/tgroup.png",
-  brandTabs: [
-    { key: "T.Brands", label: "BRANDS", logoSrc: "/logos/tbrands.png" },
-    { key: "T.Venues", label: "VENUES", logoSrc: "/logos/tvenues.png" },
-    { key: "T.Dreams", label: "DREAMS", logoSrc: "/logos/tdreams.png" },
-    { key: "T.Youth", label: "YOUTH", logoSrc: "/logos/tyouth.png" },
+    brandTabs: [
+    {
+      id: "T.Brands",
+      key: "T.Brands",
+      label: "BRANDS",
+      logo: "/logos/tbrands.png",
+      logoSrc: "/logos/tbrands.png",
+    },
+    {
+      id: "T.Venues",
+      key: "T.Venues",
+      label: "VENUES",
+      logo: "/logos/tvenues.png",
+      logoSrc: "/logos/tvenues.png",
+    },
+    {
+      id: "T.Dreams",
+      key: "T.Dreams",
+      label: "DREAMS",
+      logo: "/logos/tdreams.png",
+      logoSrc: "/logos/tdreams.png",
+    },
+    {
+      id: "T.Youth",
+      key: "T.Youth",
+      label: "YOUTH",
+      logo: "/logos/tyouth.png",
+      logoSrc: "/logos/tyouth.png",
+    },
   ],
+,
 
   // Posters de aniversariantes (PNG em /public/birthdays)
   birthdayPosters: [
