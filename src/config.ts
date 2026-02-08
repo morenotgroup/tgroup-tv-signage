@@ -1,5 +1,6 @@
 export const SIGNAGE_CONFIG = {
   companyName: "T.Group",
+  groupLogoSrc: "/logos/tgroup.png",
   locationLabel: "Perdizes — São Paulo",
 
   // São Paulo (aprox.)
