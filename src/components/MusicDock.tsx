@@ -1,23 +1,23 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import type { RadioProfileId } from "@/lib/radioProfiles";
 
 type Station = {
-  stationuuid: string;
+  id: string;
   name: string;
-  url_resolved: string;
+  streamUrl: string;
   favicon?: string;
-  tags?: string;
-  countrycode?: string;
+  country?: string;
   codec?: string;
   bitrate?: number;
 };
 
 type ApiResp = {
-  ok: boolean;
+  profile: RadioProfileId;
+  label: string;
+  count: number;
   stations: Station[];
-  tag: string;
-  countrycode: string;
 };
 
 function clamp(n: number, a: number, b: number) {
@@ -27,230 +27,208 @@ function clamp(n: number, a: number, b: number) {
 export default function MusicDock() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  const [enabled, setEnabled] = useState(false);
-  const [loadingStations, setLoadingStations] = useState(true);
+  const [profile, setProfile] = useState<RadioProfileId>("agency");
   const [stations, setStations] = useState<Station[]>([]);
   const [idx, setIdx] = useState(0);
 
-  const [volume, setVolume] = useState(0.25);
-  const [status, setStatus] = useState<
-    "idle" | "loading" | "playing" | "paused" | "error"
-  >("idle");
+  const [isReady, setIsReady] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const station = useMemo(() => stations[idx], [stations, idx]);
+  const current = useMemo(() => stations[idx], [stations, idx]);
 
-  async function loadStations() {
-    setLoadingStations(true);
+  async function loadStations(p: RadioProfileId) {
+    setLoading(true);
     try {
-      const r = await fetch("/api/radio?tag=lofi&countrycode=BR&limit=120", {
+      const res = await fetch(`/api/radio?profile=${encodeURIComponent(p)}&limit=80`, {
         cache: "no-store",
       });
-      const j = (await r.json()) as ApiResp;
-      if (!j?.ok || !Array.isArray(j.stations) || j.stations.length === 0) {
-        throw new Error("Sem estações retornadas.");
+      const data = (await res.json()) as ApiResp;
+      const list = (data?.stations || []).filter((s) => !!s.streamUrl);
+
+      // embaralha um pouco pra não ficar sempre igual
+      for (let i = list.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [list[i], list[j]] = [list[j], list[i]];
       }
-      setStations(j.stations);
+
+      setStations(list);
       setIdx(0);
-      setStatus("idle");
     } catch {
       setStations([]);
       setIdx(0);
-      setStatus("error");
     } finally {
-      setLoadingStations(false);
+      setLoading(false);
     }
   }
 
   function nextStation() {
-    if (!stations.length) return;
-    setIdx((v) => (v + 1) % stations.length);
+    setIdx((prev) => {
+      if (stations.length <= 1) return 0;
+      const next = (prev + 1) % stations.length;
+      return next;
+    });
   }
 
-  function prevStation() {
-    if (!stations.length) return;
-    setIdx((v) => (v - 1 + stations.length) % stations.length);
-  }
+  async function tryPlay() {
+    const a = audioRef.current;
+    if (!a || !current?.streamUrl) return;
 
-  async function playCurrent() {
-    const audio = audioRef.current;
-    if (!audio || !station) return;
+    a.src = current.streamUrl;
+    a.crossOrigin = "anonymous";
 
     try {
-      setStatus("loading");
-      audio.src = station.url_resolved;
-      audio.load();
-      audio.volume = volume;
-
-      const p = audio.play();
-      if (p) await p;
-
-      setStatus("playing");
+      await a.play();
+      setIsPlaying(true);
+      setIsReady(true);
     } catch {
-      setStatus("error");
-      nextStation();
+      // Autoplay com som pode ser bloqueado sem gesto do usuário
+      setIsPlaying(false);
+      setIsReady(false);
     }
   }
 
   function pause() {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.pause();
-    setStatus("paused");
+    const a = audioRef.current;
+    if (!a) return;
+    a.pause();
+    setIsPlaying(false);
   }
 
+  // Carrega stations ao trocar profile
   useEffect(() => {
-    loadStations();
+    loadStations(profile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [profile]);
 
+  // Quando stations muda / idx muda, tenta tocar se já estava tocando
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.volume = volume;
-  }, [volume]);
+    const a = audioRef.current;
+    if (!a) return;
+    if (!current?.streamUrl) return;
 
-  useEffect(() => {
-    if (!enabled) return;
-    if (!station) return;
-    playCurrent();
+    if (isPlaying) {
+      tryPlay();
+    } else {
+      // só prepara o src
+      a.src = current.streamUrl;
+      a.crossOrigin = "anonymous";
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, enabled]);
+  }, [idx, stations]);
 
+  // listeners de erro/fim
   useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
+    const a = audioRef.current;
+    if (!a) return;
 
     const onError = () => {
-      setStatus("error");
+      // troca de estação automaticamente se falhar
       nextStation();
-    };
-    const onStalled = () => {
-      if (enabled) playCurrent();
     };
     const onEnded = () => {
       nextStation();
     };
 
-    audio.addEventListener("error", onError);
-    audio.addEventListener("stalled", onStalled);
-    audio.addEventListener("ended", onEnded);
+    a.addEventListener("error", onError);
+    a.addEventListener("ended", onEnded);
 
     return () => {
-      audio.removeEventListener("error", onError);
-      audio.removeEventListener("stalled", onStalled);
-      audio.removeEventListener("ended", onEnded);
+      a.removeEventListener("error", onError);
+      a.removeEventListener("ended", onEnded);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, stations.length]);
+  }, [stations]);
 
-  const pill =
-    "rounded-full border border-white/10 bg-white/5 backdrop-blur-xl shadow-lg";
+  // Se o player estiver tocando e trocarmos de estação, tenta tocar novamente
+  useEffect(() => {
+    if (isPlaying) tryPlay();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [current?.streamUrl]);
+
+  // volume padrão “ambiente”
+  useEffect(() => {
+    const a = audioRef.current;
+    if (!a) return;
+    a.volume = 0.35;
+  }, []);
+
+  const safeIdx = clamp(idx, 0, Math.max(0, stations.length - 1));
 
   return (
-    <div className="fixed bottom-6 left-6 z-50">
-      <audio ref={audioRef} preload="none" />
-
-      <div className={`${pill} px-5 py-3 flex items-center gap-4`}>
-        <div className="w-10 h-10 rounded-2xl bg-white/10 grid place-items-center overflow-hidden">
-          {station?.favicon ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={station.favicon}
-              alt=""
-              className="w-full h-full object-cover"
-              onError={(e) => {
-                (e.currentTarget as HTMLImageElement).style.display = "none";
-              }}
-            />
-          ) : (
-            <span className="text-xs opacity-70">♫</span>
-          )}
-        </div>
-
-        <div className="min-w-[320px] max-w-[520px]">
-          <div className="text-xs opacity-60">
-            Música (Radio Browser) • volume {Math.round(volume * 100)}%
+    <div className="fixed bottom-4 right-4 z-50 w-[520px] max-w-[92vw]">
+      <div className="rounded-3xl border border-white/10 bg-black/55 backdrop-blur-xl shadow-2xl overflow-hidden">
+        <div className="p-4 flex items-center gap-3">
+          <div className="h-10 w-10 rounded-2xl bg-white/10 flex items-center justify-center overflow-hidden">
+            {current?.favicon ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={current.favicon} alt="" className="h-full w-full object-cover" />
+            ) : (
+              <div className="text-xs opacity-70">♫</div>
+            )}
           </div>
-          <div className="text-lg font-medium leading-tight truncate">
-            {loadingStations
-              ? "Carregando rádios..."
-              : station?.name || "Sem estação"}
-          </div>
-          <div className="text-xs opacity-50">
-            Status:{" "}
-            {enabled
-              ? status === "playing"
-                ? "tocando"
-                : status === "loading"
-                ? "carregando"
-                : status === "paused"
-                ? "pausado"
-                : status === "error"
-                ? "erro"
-                : "pronto"
-              : "desligado (clique para ativar)"}
-          </div>
-        </div>
 
-        <div className="flex items-center gap-2">
-          <button
-            className={`${pill} px-3 py-2 text-sm hover:bg-white/10 transition`}
-            onClick={prevStation}
-            title="Anterior"
-          >
-            ◀
-          </button>
+          <div className="min-w-0 flex-1">
+            <div className="text-xs uppercase tracking-widest opacity-60">
+              Rádio • {profile === "agency" ? "Agência" : profile === "focus" ? "Focus" : "Chill"}
+            </div>
+            <div className="truncate text-sm font-semibold">
+              {loading ? "Carregando estações..." : current?.name || "Sem estação"}
+            </div>
+            <div className="text-xs opacity-60 truncate">
+              {current?.country ? `${current.country} • ` : ""}
+              {current?.codec ? `${current.codec}` : ""}
+              {typeof current?.bitrate === "number" ? ` • ${current.bitrate}kbps` : ""}
+              {stations.length ? ` • ${safeIdx + 1}/${stations.length}` : ""}
+            </div>
+          </div>
 
-          {!enabled || status !== "playing" ? (
-            <button
-              className={`${pill} px-4 py-2 text-sm hover:bg-white/10 transition`}
-              onClick={async () => {
-                setEnabled(true);
-                await playCurrent();
-              }}
-              title="Ativar / Play"
+          <div className="flex items-center gap-2">
+            <select
+              value={profile}
+              onChange={(e) => setProfile(e.target.value as RadioProfileId)}
+              className="rounded-xl bg-white/5 border border-white/10 px-3 py-2 text-xs outline-none"
+              title="Preset"
             >
-              ▶ Ativar
-            </button>
-          ) : (
+              <option value="agency">Agência</option>
+              <option value="focus">Focus</option>
+              <option value="chill">Chill</option>
+            </select>
+
             <button
-              className={`${pill} px-4 py-2 text-sm hover:bg-white/10 transition`}
-              onClick={() => pause()}
-              title="Pausar"
+              onClick={() => {
+                if (isPlaying) pause();
+                else tryPlay();
+              }}
+              className="rounded-2xl px-4 py-2 bg-white text-black text-sm font-semibold hover:opacity-90 transition"
             >
-              ❚❚ Pausar
+              {isPlaying ? "Pausar" : "Tocar"}
             </button>
-          )}
 
-          <button
-            className={`${pill} px-3 py-2 text-sm hover:bg-white/10 transition`}
-            onClick={nextStation}
-            title="Próxima"
-          >
-            ▶
-          </button>
+            <button
+              onClick={nextStation}
+              className="rounded-2xl px-3 py-2 bg-white/10 border border-white/10 text-sm hover:bg-white/15 transition"
+              title="Próxima"
+            >
+              ▶︎▶︎
+            </button>
+          </div>
         </div>
 
-        <div className="flex items-center gap-3 pl-2">
-          <input
-            aria-label="Volume"
-            type="range"
-            min={0}
-            max={100}
-            value={Math.round(volume * 100)}
-            onChange={(e) =>
-              setVolume(clamp(Number(e.target.value) / 100, 0, 1))
-            }
-          />
-          <button
-            className={`${pill} px-3 py-2 text-sm hover:bg-white/10 transition`}
-            onClick={() => loadStations()}
-            title="Recarregar lista"
-          >
-            ↻
-          </button>
-        </div>
+        {!isReady && (
+          <div className="px-4 pb-4">
+            <div className="rounded-2xl bg-white/5 border border-white/10 p-3 text-xs leading-relaxed opacity-90">
+              <div className="font-semibold mb-1">Se o som não iniciar:</div>
+              <div>
+                Alguns browsers bloqueiam autoplay com som até você clicar no domínio (normal em TV/kiosk).  
+                Aperta <b>Tocar</b> uma vez e depois fica estável. :contentReference[oaicite:4]{index=4}
+              </div>
+            </div>
+          </div>
+        )}
       </div>
+
+      <audio ref={audioRef} />
     </div>
   );
 }
