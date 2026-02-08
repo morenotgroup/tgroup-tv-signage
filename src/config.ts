@@ -112,5 +112,12 @@ export const SIGNAGE_CONFIG: SignageConfig = {
   audio: {
     enabled: true,
     defaultProfile: "agency",
+    import type { RadioProfileId } from "@/lib/radio";
+
+export type AudioConfig = {
+  enabled: boolean;
+  defaultProfile?: RadioProfileId;
+};
+
   },
 };
