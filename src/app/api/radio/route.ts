@@ -1,185 +1,211 @@
 import { NextResponse } from "next/server";
-import { RADIO_PROFILES, type RadioProfileId } from "@/lib/radioProfiles";
 
-type RBStation = {
-  stationuuid: string;
-  name: string;
-  url_resolved: string;
-  favicon: string;
-  homepage: string;
-  tags: string;
-  country: string;
-  countrycode: string;
-  codec: string;
-  bitrate: number;
-  lastcheckok: number;
-  lastchecktime: string;
+export const dynamic = "force-dynamic";
+
+type RadioProfileId = "agency" | "focus" | "chill";
+
+type RawStation = {
+  stationuuid?: string;
+  name?: string;
+  url_resolved?: string;
+  favicon?: string;
+  country?: string;
+  codec?: string;
+  bitrate?: number;
+  tags?: string;
+  lastcheckok?: number;
 };
 
-type OutStation = {
+type Station = {
   id: string;
   name: string;
   streamUrl: string;
   favicon?: string;
-  homepage?: string;
-  tags?: string;
   country?: string;
   codec?: string;
   bitrate?: number;
 };
 
+type ApiResp = {
+  ok: boolean;
+  profile: RadioProfileId;
+  label?: string;
+  count?: number;
+  stations: Station[];
+  error?: string;
+  source?: string;
+};
+
 const MIRRORS = [
-  // Radio Browser tem vários mirrors. Se um falhar, tentamos o próximo.
   "https://de1.api.radio-browser.info",
   "https://nl1.api.radio-browser.info",
   "https://at1.api.radio-browser.info",
+  "https://all.api.radio-browser.info",
 ];
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), ms);
+const PROFILE_TAGS: Record<RadioProfileId, { label: string; tags: string[] }> = {
+  agency: {
+    label: "Agência",
+    tags: ["dance", "electronic", "house", "pop", "hits", "top 40"],
+  },
+  focus: {
+    label: "Focus",
+    tags: ["lofi", "study", "focus", "chillout", "ambient", "downtempo"],
+  },
+  chill: {
+    label: "Chill",
+    tags: ["chill", "lounge", "ambient", "downtempo", "relax", "chillout"],
+  },
+};
 
-  // @ts-expect-error - we pass the signal via fetch below, not here
-  promise.signal = ctrl.signal;
-
-  return Promise.race([
-    promise.finally(() => clearTimeout(timeout)),
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error("timeout")), ms)
-    ),
-  ]);
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
-async function fetchJson(url: string, timeoutMs = 8000) {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), timeoutMs);
+function normProfile(p?: string | null): RadioProfileId {
+  if (p === "agency" || p === "focus" || p === "chill") return p;
+  return "agency";
+}
+
+function safeStr(s: unknown) {
+  return typeof s === "string" ? s.trim() : "";
+}
+
+function isHttpUrl(s: string) {
+  return s.startsWith("http://") || s.startsWith("https://");
+}
+
+function uniqBy<T>(arr: T[], keyFn: (t: T) => string) {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of arr) {
+    const k = keyFn(item);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    out.push(item);
+  }
+  return out;
+}
+
+async function fetchWithTimeout(url: string, ms = 7000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
+
   try {
-    const res = await fetch(url, {
-      signal: ctrl.signal,
+    const r = await fetch(url, {
+      signal: controller.signal,
       headers: {
-        "User-Agent": "tgroup-tv-signage/1.0 (+Vercel)",
+        // Radio Browser pede User-Agent em exemplos/bibliotecas e ajuda a evitar bloqueios genéricos
+        "User-Agent": "tgroup-tv-signage/0.1 (Next.js on Vercel)",
+        Accept: "application/json",
       },
-      // Edge/runtime caching depende do Next/Vercel — aqui deixo “no-store”
       cache: "no-store",
     });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return (await res.json()) as RBStation[];
+
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    return (await r.json()) as RawStation[];
   } finally {
     clearTimeout(t);
   }
 }
 
-function buildSearchUrl(base: string, params: Record<string, string>) {
-  const u = new URL("/json/stations/search", base);
-  for (const [k, v] of Object.entries(params)) {
-    if (v !== "") u.searchParams.set(k, v);
-  }
-  return u.toString();
+function buildSearchUrl(base: string, tags: string[], limit: number) {
+  // Endpoint oficial: /json/stations/search
+  const endpoint = new URL("/json/stations/search", base);
+
+  // Estratégia: usar 1 tag “principal” por chamada e depois juntar + deduplicar.
+  // Aqui a gente não seta tag direto no URL final; montamos em loop fora.
+  endpoint.searchParams.set("limit", String(limit));
+  endpoint.searchParams.set("hidebroken", "true");
+  endpoint.searchParams.set("order", "clickcount");
+  endpoint.searchParams.set("reverse", "true");
+
+  return endpoint;
 }
 
-function uniqById(stations: OutStation[]) {
-  const seen = new Set<string>();
-  const out: OutStation[] = [];
-  for (const s of stations) {
-    if (!s?.id) continue;
-    if (seen.has(s.id)) continue;
-    seen.add(s.id);
-    out.push(s);
+async function getStations(profile: RadioProfileId, limit: number) {
+  const { tags } = PROFILE_TAGS[profile];
+
+  // tenta mirrors em sequência
+  let lastErr = "Falha desconhecida";
+  for (const base of MIRRORS) {
+    try {
+      const perTag = Math.max(10, Math.ceil(limit / Math.max(1, tags.length)));
+
+      const collected: RawStation[] = [];
+      for (const tag of tags) {
+        const endpoint = buildSearchUrl(base, tags, perTag);
+        endpoint.searchParams.set("tag", tag);
+
+        const urlStr = endpoint.toString();
+        const items = await fetchWithTimeout(urlStr, 7000);
+        collected.push(...items);
+      }
+
+      const cleaned = collected
+        .map((s): Station | null => {
+          const id = safeStr(s.stationuuid);
+          const name = safeStr(s.name);
+          const streamUrl = safeStr(s.url_resolved);
+          if (!id || !name || !streamUrl) return null;
+          if (!isHttpUrl(streamUrl)) return null;
+
+          // alguns registros podem estar “quebrados”, então filtramos pelo básico
+          return {
+            id,
+            name,
+            streamUrl,
+            favicon: safeStr(s.favicon) || undefined,
+            country: safeStr(s.country) || undefined,
+            codec: safeStr(s.codec) || undefined,
+            bitrate: typeof s.bitrate === "number" ? s.bitrate : undefined,
+          };
+        })
+        .filter(Boolean) as Station[];
+
+      const unique = uniqBy(cleaned, (x) => x.id).slice(0, limit);
+
+      return {
+        ok: true as const,
+        stations: unique,
+        source: base,
+      };
+    } catch (e: any) {
+      lastErr = e?.message ? String(e.message) : "Erro ao consultar mirror";
+      continue;
+    }
   }
-  return out;
+
+  return {
+    ok: false as const,
+    stations: [] as Station[],
+    source: "mirrors",
+    error: lastErr,
+  };
 }
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  const u = new URL(req.url);
+  const profile = normProfile(u.searchParams.get("profile"));
+  const limit = clamp(Number(u.searchParams.get("limit") || "80"), 10, 120);
 
-  const profile = (searchParams.get("profile") ?? "agency") as RadioProfileId;
-  const chosen = RADIO_PROFILES[profile] ?? RADIO_PROFILES.agency;
+  const { label } = PROFILE_TAGS[profile];
 
-  // Overrides opcionais (se você quiser brincar via URL)
-  const tagOverride = searchParams.get("tag")?.trim() || "";
-  const countryOverride = searchParams.get("countrycode")?.trim() || "";
-  const limit = Math.max(10, Math.min(120, Number(searchParams.get("limit") || 80)));
+  const result = await getStations(profile, limit);
 
-  const tagsToTry = tagOverride ? [tagOverride] : chosen.tags;
-  const countriesToTry = countryOverride
-    ? [countryOverride]
-    : chosen.countryPriority;
+  const payload: ApiResp = {
+    ok: result.ok,
+    profile,
+    label,
+    count: result.stations.length,
+    stations: result.stations,
+    source: result.source,
+    ...(result.ok ? {} : { error: (result as any).error ?? "Falha" }),
+  };
 
-  // Plano de tentativa: (country x tag x codec)
-  const attempts: Array<Record<string, string>> = [];
-  for (const countrycode of countriesToTry) {
-    for (const tag of tagsToTry) {
-      for (const codec of chosen.codecs) {
-        attempts.push({
-          tag,
-          countrycode,
-          codec,
-          bitrateMin: String(chosen.bitrateMin),
-          hidebroken: "true",
-          is_https: "true",
-          order: "votes",
-          reverse: "true",
-          limit: String(chosen.perTryLimit),
-        });
-      }
-    }
-  }
-
-  const collected: OutStation[] = [];
-  const errors: string[] = [];
-
-  // Tentamos mirrors + attempts até coletar o suficiente
-  outer: for (const mirror of MIRRORS) {
-    for (const params of attempts) {
-      try {
-        const url = buildSearchUrl(mirror, params);
-        const data = await fetchJson(url, 9000);
-
-        const mapped: OutStation[] = (data || [])
-          // só por segurança extra:
-          .filter((s) => !!s.url_resolved && s.lastcheckok === 1)
-          .map((s) => ({
-            id: s.stationuuid,
-            name: s.name,
-            streamUrl: s.url_resolved,
-            favicon: s.favicon || undefined,
-            homepage: s.homepage || undefined,
-            tags: s.tags || undefined,
-            country: s.country || s.countrycode || undefined,
-            codec: s.codec || undefined,
-            bitrate: typeof s.bitrate === "number" ? s.bitrate : undefined,
-          }));
-
-        collected.push(...mapped);
-
-        const deduped = uniqById(collected);
-        if (deduped.length >= limit) break outer;
-      } catch (e: any) {
-        errors.push(`${mirror} :: ${params.tag}/${params.countrycode}/${params.codec} => ${e?.message || "error"}`);
-      }
-    }
-  }
-
-  const result = uniqById(collected).slice(0, limit);
-
-  return NextResponse.json(
-    {
-      profile: chosen.id,
-      label: chosen.label,
-      count: result.length,
-      stations: result,
-      // Só pra debug se um dia precisar (pode remover depois)
-      debug: {
-        tagOverride: tagOverride || null,
-        countryOverride: countryOverride || null,
-        errors: errors.slice(0, 8),
-      },
+  return NextResponse.json(payload, {
+    headers: {
+      "Cache-Control": "no-store, max-age=0",
     },
-    {
-      headers: {
-        // Ajuda a não martelar a API toda hora
-        "Cache-Control": "s-maxage=900, stale-while-revalidate=3600",
-      },
-    }
-  );
+  });
 }
