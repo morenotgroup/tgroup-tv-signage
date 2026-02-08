@@ -12,7 +12,11 @@ type RssItem = {
 };
 
 export async function GET() {
-  const rssUrl = SIGNAGE_CONFIG.newsRssUrl;
+  const rssUrl =
+    process.env.NEWS_RSS_URL ||
+    // @ts-expect-error - caso o config seja editado e perca a key, ainda funciona
+    SIGNAGE_CONFIG.newsRssUrl ||
+    "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419";
 
   try {
     const res = await fetch(rssUrl, { next: { revalidate: 600 } });
@@ -27,7 +31,7 @@ export async function GET() {
     const parser = new XMLParser({
       ignoreAttributes: false,
       attributeNamePrefix: "",
-      trimValues: true
+      trimValues: true,
     });
 
     const parsed = parser.parse(xml);
@@ -45,7 +49,7 @@ export async function GET() {
         title: (it.title ?? "").replace(/\s+/g, " ").trim(),
         link: it.link ?? "",
         pubDate: it.pubDate ?? "",
-        source: it.source?.["#text"] ?? ""
+        source: it.source?.["#text"] ?? "",
       }))
       .filter((x) => x.title);
 
