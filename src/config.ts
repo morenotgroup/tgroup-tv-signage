@@ -13,11 +13,6 @@ export const SIGNAGE_CONFIG = {
   refreshNewsMs: 20 * 60 * 1000,
 
   // News RSS (Google News BR)
- codex/improve-musicdock-features
-  // O padrão do RSS usa parâmetros de idioma/região (hl/gl/ceid).
-  newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
-
   // Formato padrão do RSS do Google News com parâmetros hl/gl/ceid.
   newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
- main
-};
+} as const;
