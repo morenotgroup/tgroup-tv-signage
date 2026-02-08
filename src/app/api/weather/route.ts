@@ -4,7 +4,6 @@ import { SIGNAGE_CONFIG } from "@/config";
 export const runtime = "nodejs";
 
 function codeToEmoji(code: number) {
-  // Open-Meteo weathercode: https://open-meteo.com/en/docs
   if (code === 0) return "☀️";
   if ([1, 2].includes(code)) return "🌤️";
   if (code === 3) return "☁️";
@@ -33,17 +32,16 @@ function codeToDescPt(code: number) {
 }
 
 export async function GET() {
-  // Fallbacks blindados:
+  const cfg = SIGNAGE_CONFIG as any;
+
   const latitude =
     (process.env.WEATHER_LAT && Number(process.env.WEATHER_LAT)) ||
-    // @ts-expect-error - se perder a key no config, ainda funciona
-    (SIGNAGE_CONFIG.latitude as number | undefined) ||
+    (typeof cfg.latitude === "number" ? cfg.latitude : undefined) ||
     -23.55052;
 
   const longitude =
     (process.env.WEATHER_LON && Number(process.env.WEATHER_LON)) ||
-    // @ts-expect-error - se perder a key no config, ainda funciona
-    (SIGNAGE_CONFIG.longitude as number | undefined) ||
+    (typeof cfg.longitude === "number" ? cfg.longitude : undefined) ||
     -46.63331;
 
   const url =
