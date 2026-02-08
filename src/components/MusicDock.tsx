@@ -55,7 +55,7 @@ export function MusicDock() {
   const failRef = useRef(0);
 
   const [enabled] = useState(!!SIGNAGE_CONFIG.audio?.enabled);
-  const [profile, setProfile] = useState<RadioProfileId>(SIGNAGE_CONFIG.audio?.defaultProfile || "agency");
+  const [profile, setProfile] = useState<RadioProfileId>(() => {   const v = SIGNAGE_CONFIG.audio?.defaultProfile;   // se vier string, a gente assume que é um id válido do seu union (RadioProfileId)   // se vier undefined/qualquer coisa, cai no "agency"   return (typeof v === "string" ? (v as RadioProfileId) : "agency"); });
   const [stations, setStations] = useState<Station[]>([]);
   const [idx, setIdx] = useState(0);
 
