@@ -23,7 +23,12 @@ export const SIGNAGE_CONFIG = {
     { key: "T.Dreams", label: "DREAMS", logoSrc: "/logos/tdreams.png" },
     { key: "T.Brands", label: "BRANDS", logoSrc: "/logos/tbrands.png" },
     { key: "T.Venues", label: "VENUES", logoSrc: "/logos/tvenues.png" },
-    birthdayPosters: [],
+  birthdayPosters: [
+    { mmdd: "0302", src: "/birthdays/0302_BDAY_GIU_TG.png", label: "Giu" },
+    { mmdd: "1302", src: "/birthdays/1302_BDAY_MATEUS_TG.png", label: "Mateus" },
+    { mmdd: "2102", src: "/birthdays/2102_BDAY_ANALU_TB.png", label: "Analu" },
+  ],
+,
   ],
 
   // Áudio / MusicDock
