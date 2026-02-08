@@ -36,6 +36,10 @@ export const SIGNAGE_CONFIG = {
 
   logos: {
     tgroup: "/logos/tgroup.png", // ajuste se já tiver outro caminho
+
+  audio: {
+    enabled: false,
+    defaultProfile: "agency",
   },
 
   brandTabs: [
