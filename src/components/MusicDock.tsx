@@ -20,6 +20,13 @@ type ApiResp = {
   countrycode: string;
 };
 
+const PREFS_KEY = "musicDockPrefs";
+
+type MusicDockPrefs = {
+  volume: number;
+  shuffle: boolean;
+};
+
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
 }
@@ -33,11 +40,21 @@ export default function MusicDock() {
   const [idx, setIdx] = useState(0);
 
   const [volume, setVolume] = useState(0.25);
+  const [shuffle, setShuffle] = useState(false);
   const [status, setStatus] = useState<
     "idle" | "loading" | "playing" | "paused" | "error"
   >("idle");
 
   const station = useMemo(() => stations[idx], [stations, idx]);
+
+  function pickRandomIndex(current: number, total: number) {
+    if (total <= 1) return current;
+    let next = current;
+    while (next === current) {
+      next = Math.floor(Math.random() * total);
+    }
+    return next;
+  }
 
   async function loadStations() {
     setLoadingStations(true);
@@ -49,6 +66,7 @@ export default function MusicDock() {
       if (!j?.ok || !Array.isArray(j.stations) || j.stations.length === 0) {
         throw new Error("Sem estações retornadas.");
       }
+
       setStations(j.stations);
       setIdx(0);
       setStatus("idle");
@@ -63,7 +81,9 @@ export default function MusicDock() {
 
   function nextStation() {
     if (!stations.length) return;
-    setIdx((v) => (v + 1) % stations.length);
+    setIdx((v) =>
+      shuffle ? pickRandomIndex(v, stations.length) : (v + 1) % stations.length,
+    );
   }
 
   function prevStation() {
@@ -100,8 +120,32 @@ export default function MusicDock() {
 
   useEffect(() => {
     loadStations();
+
+    try {
+      const raw = window.localStorage.getItem(PREFS_KEY);
+      if (!raw) return;
+
+      const parsed = JSON.parse(raw) as Partial<MusicDockPrefs>;
+      if (typeof parsed.volume === "number") {
+        setVolume(clamp(parsed.volume, 0, 1));
+      }
+      if (typeof parsed.shuffle === "boolean") {
+        setShuffle(parsed.shuffle);
+      }
+    } catch {
+      // ignore invalid localStorage payload
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    try {
+      const prefs: MusicDockPrefs = { volume, shuffle };
+      window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+    } catch {
+      // ignore localStorage failures
+    }
+  }, [shuffle, volume]);
 
   useEffect(() => {
     const audio = audioRef.current;
@@ -121,13 +165,17 @@ export default function MusicDock() {
     if (!audio) return;
 
     const onError = () => {
+      if (!enabled) return;
       setStatus("error");
       nextStation();
     };
     const onStalled = () => {
-      if (enabled) playCurrent();
+      if (!enabled) return;
+      setStatus("error");
+      nextStation();
     };
     const onEnded = () => {
+      if (!enabled) return;
       nextStation();
     };
 
@@ -182,12 +230,12 @@ export default function MusicDock() {
               ? status === "playing"
                 ? "tocando"
                 : status === "loading"
-                ? "carregando"
-                : status === "paused"
-                ? "pausado"
-                : status === "error"
-                ? "erro"
-                : "pronto"
+                  ? "carregando"
+                  : status === "paused"
+                    ? "pausado"
+                    : status === "error"
+                      ? "erro"
+                      : "pronto"
               : "desligado (clique para ativar)"}
           </div>
         </div>
@@ -232,6 +280,15 @@ export default function MusicDock() {
         </div>
 
         <div className="flex items-center gap-3 pl-2">
+          <button
+            className={`${pill} px-3 py-2 text-sm hover:bg-white/10 transition ${
+              shuffle ? "bg-white/15" : ""
+            }`}
+            onClick={() => setShuffle((v) => !v)}
+            title="Modo aleatório"
+          >
+            🔀 {shuffle ? "Aleatório" : "Sequencial"}
+          </button>
           <input
             aria-label="Volume"
             type="range"

@@ -13,6 +13,6 @@ export const SIGNAGE_CONFIG = {
   refreshNewsMs: 20 * 60 * 1000,
 
   // News RSS (Google News BR)
-  // O padrão do RSS é bem conhecido (hl/gl/ceid) :contentReference[oaicite:4]{index=4}
-  newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419"
+  // O padrão do RSS usa parâmetros de idioma/região (hl/gl/ceid).
+  newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
 };
