@@ -1,85 +1,105 @@
 import { NextResponse } from "next/server";
-import dns from "node:dns/promises";
 
-export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
-type RadioBrowserStation = {
-  stationuuid: string;
-  name: string;
-  url: string;
-  url_resolved: string;
+type RadioProfileId = "agency" | "focus" | "chill";
+
+type RawStation = {
+  stationuuid?: string;
+  name?: string;
+  url_resolved?: string;
   favicon?: string;
-  tags?: string;
-  countrycode?: string;
+  country?: string;
   codec?: string;
   bitrate?: number;
+  tags?: string;
   lastcheckok?: number;
 };
 
-const FALLBACK_BASES = [
+type Station = {
+  id: string;
+  name: string;
+  streamUrl: string;
+  favicon?: string;
+  country?: string;
+  codec?: string;
+  bitrate?: number;
+};
+
+type ApiResp = {
+  ok: boolean;
+  profile: RadioProfileId;
+  label?: string;
+  count?: number;
+  stations: Station[];
+  error?: string;
+  source?: string;
+};
+
+const MIRRORS = [
   "https://de1.api.radio-browser.info",
-  "https://de2.api.radio-browser.info",
-  "https://fi1.api.radio-browser.info",
+  "https://nl1.api.radio-browser.info",
+  "https://at1.api.radio-browser.info",
+  "https://all.api.radio-browser.info",
 ];
 
-async function pickRadioBrowserBase(): Promise<string> {
-  try {
-    const ips = await dns.resolve4("all.api.radio-browser.info");
-    const hosts: string[] = [];
+const PROFILE_TAGS: Record<RadioProfileId, { label: string; tags: string[] }> = {
+  agency: {
+    label: "Agência",
+    tags: ["dance", "electronic", "house", "pop", "hits", "top 40"],
+  },
+  focus: {
+    label: "Focus",
+    tags: ["lofi", "study", "focus", "chillout", "ambient", "downtempo"],
+  },
+  chill: {
+    label: "Chill",
+    tags: ["chill", "lounge", "ambient", "downtempo", "relax", "chillout"],
+  },
+};
 
-    for (const ip of ips.slice(0, 6)) {
-      try {
-        const rev = await dns.reverse(ip);
-        for (const h of rev) hosts.push(h);
-      } catch {
-        // ignore
-      }
-    }
-
-    const cleanHosts = hosts
-      .map((h) => h.trim())
-      .filter(Boolean)
-      .map((h) => (h.startsWith("https://") ? h : `https://${h}`));
-
-    const candidates = cleanHosts.length ? cleanHosts : FALLBACK_BASES;
-    return candidates[Math.floor(Math.random() * candidates.length)];
-  } catch {
-    return FALLBACK_BASES[Math.floor(Math.random() * FALLBACK_BASES.length)];
-  }
+function clamp(n: number, a: number, b: number) {
+  return Math.max(a, Math.min(b, n));
 }
 
-function uniqBy<T>(arr: T[], keyFn: (v: T) => string) {
+function normProfile(p?: string | null): RadioProfileId {
+  if (p === "agency" || p === "focus" || p === "chill") return p;
+  return "agency";
+}
+
+function safeStr(s: unknown) {
+  return typeof s === "string" ? s.trim() : "";
+}
+
+function isHttpUrl(s: string) {
+  return s.startsWith("http://") || s.startsWith("https://");
+}
+
+function uniqBy<T>(arr: T[], keyFn: (t: T) => string) {
   const seen = new Set<string>();
   const out: T[] = [];
-  for (const v of arr) {
-    const k = keyFn(v);
-    if (seen.has(k)) continue;
+  for (const item of arr) {
+    const k = keyFn(item);
+    if (!k || seen.has(k)) continue;
     seen.add(k);
-    out.push(v);
+    out.push(item);
   }
   return out;
 }
 
-export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+async function fetchWithTimeout(url: string, ms = 7000) {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), ms);
 
-  const tag = (searchParams.get("tag") || "lofi").trim();
-  const countrycode = (searchParams.get("countrycode") || "BR")
-    .trim()
-    .toUpperCase();
-  const limit = Math.min(Number(searchParams.get("limit") || "80"), 150);
-
-  const base = await pickRadioBrowserBase();
-
-  const url =
-    `${base}/json/stations/search?` +
-    new URLSearchParams({
-      hidebroken: "true",
-      order: "votes",
-      reverse: "true",
-      limit: String(limit),
-      countrycode,
-      tag,
+  try {
+    const r = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        // Radio Browser pede User-Agent em exemplos/bibliotecas e ajuda a evitar bloqueios genéricos
+        "User-Agent": "tgroup-tv-signage/0.1 (Next.js on Vercel)",
+        Accept: "application/json",
+      },
+      cache: "no-store",
     });
 
   try {
