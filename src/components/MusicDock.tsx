@@ -49,7 +49,7 @@ function shuffle<T>(arr: T[]) {
   return a;
 }
 
-export default function MusicDock() {
+export function MusicDock() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const switchingRef = useRef(false);
   const failRef = useRef(0);
@@ -425,3 +425,5 @@ export default function MusicDock() {
     </div>
   );
 }
+
+export default MusicDock;
