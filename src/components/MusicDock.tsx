@@ -65,7 +65,7 @@ function safeJsonParse<T>(raw: string | null, fallback: T): T {
   }
 }
 
-export default function MusicDock() {
+export default function MusicDock({ tvMode = false }: { tvMode?: boolean }) {
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const switchingRef = useRef(false);
@@ -93,6 +93,7 @@ export default function MusicDock() {
   const [favMap, setFavMap] = useState<Record<string, true>>({});
 
   const current = stations.length ? stations[clamp(idx, 0, stations.length - 1)] : null;
+  const triedAutoplayRef = useRef(false);
 
   // --- Boot: prefs
   useEffect(() => {
@@ -203,6 +204,14 @@ export default function MusicDock() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile]);
 
+  useEffect(() => {
+    if (!tvMode || !stations.length || !current) return;
+    if (triedAutoplayRef.current) return;
+    triedAutoplayRef.current = true;
+    void playCurrent(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tvMode, stations.length, current?.id]);
+
   // --- Helpers persist
   function persistVolume(v: number) {
     try {
@@ -267,10 +276,10 @@ export default function MusicDock() {
       // autoplay bloqueado ou stream ruim
       if (!armed && !userAction) {
         setStatus("blocked");
-        setMsg("Clique em TOCAR 1x para liberar o áudio (modo TV/kiosk costuma bloquear autoplay).");
+        setMsg("Autoplay bloqueado pelo navegador.");
       } else {
         setStatus("blocked");
-        setMsg("Áudio bloqueado/indisponível. Tenta outra estação ou clique em TOCAR de novo.");
+        setMsg("Áudio indisponível no momento.");
       }
     } finally {
       switchingRef.current = false;
@@ -510,7 +519,7 @@ export default function MusicDock() {
                 className="h-11 min-w-[150px] rounded-2xl bg-white px-5 text-sm font-semibold text-black hover:opacity-90 transition"
                 title="Tocar / Pausar"
               >
-                {status === "playing" ? "Pausar" : "Tocar"}
+                {status === "blocked" ? "Ativar som" : status === "playing" ? "Pausar" : "Tocar"}
               </button>
 
               <button
