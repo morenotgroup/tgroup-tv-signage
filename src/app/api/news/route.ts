@@ -1,22 +1,55 @@
-export const runtime = "edge";
+import { NextResponse } from "next/server";
+import { XMLParser } from "fast-xml-parser";
+import { SIGNAGE_CONFIG } from "@/config";
+
+export const runtime = "nodejs";
+
+type RssItem = {
+  title?: string;
+  link?: string;
+  pubDate?: string;
+  source?: { "#text"?: string };
+};
 
 export async function GET() {
-  // Query ampla e neutra (pt). Depois a gente personaliza por interesses (tecnologia, cultura, SP, etc.)
-  const query = encodeURIComponent("Sao Paulo OR Brasil");
-  const url =
-    `https://api.gdeltproject.org/api/v2/doc/doc?query=${query}` +
-    `&mode=ArtList&format=json&maxrecords=12&sort=HybridRel`;
+  const rssUrl = SIGNAGE_CONFIG.newsRssUrl;
 
-  const r = await fetch(url, { next: { revalidate: 1800 } }); // 30 min
-  if (!r.ok) return new Response("news error", { status: 500 });
+  const res = await fetch(rssUrl, { next: { revalidate: 600 } });
+  if (!res.ok) {
+    return NextResponse.json(
+      { ok: false, error: `News RSS fetch failed (${res.status})` },
+      { status: 500 }
+    );
+  }
 
-  const j = await r.json();
-  const articles =
-    (j?.articles ?? []).map((a: any) => ({
-      title: a?.title,
-      url: a?.url,
-      source: a?.sourceCountry,
-    })) ?? [];
+  const xml = await res.text();
+  const parser = new XMLParser({
+    ignoreAttributes: false,
+    attributeNamePrefix: "",
+    trimValues: true
+  });
 
-  return Response.json({ articles });
+  const parsed = parser.parse(xml);
+
+  const items: RssItem[] =
+    parsed?.rss?.channel?.item
+      ? Array.isArray(parsed.rss.channel.item)
+        ? parsed.rss.channel.item
+        : [parsed.rss.channel.item]
+      : [];
+
+  const normalized = items
+    .slice(0, 12)
+    .map((it) => ({
+      title: (it.title ?? "").replace(/\s+/g, " ").trim(),
+      link: it.link ?? "",
+      pubDate: it.pubDate ?? "",
+      source: it.source?.["#text"] ?? ""
+    }))
+    .filter((x) => x.title);
+
+  return NextResponse.json(
+    { ok: true, items: normalized, source: "google_news_rss" },
+    { headers: { "Cache-Control": "s-maxage=600, stale-while-revalidate=1200" } }
+  );
 }
