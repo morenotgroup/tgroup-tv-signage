@@ -12,10 +12,11 @@ type RssItem = {
 };
 
 export async function GET() {
+  const cfg = SIGNAGE_CONFIG as any;
+
   const rssUrl =
     process.env.NEWS_RSS_URL ||
-    // @ts-expect-error - caso o config seja editado e perca a key, ainda funciona
-    SIGNAGE_CONFIG.newsRssUrl ||
+    cfg.newsRssUrl ||
     "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419";
 
   try {
