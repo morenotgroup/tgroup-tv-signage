@@ -28,6 +28,9 @@ export const SIGNAGE_CONFIG = {
 
   newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
 
+  latitude: -23.55052,
+  longitude: -46.63331,
+
   defaultTicker:
     "T.Group • Painel ao vivo • Cultura, performance e tecnologia • Confira as atualizações do mês •",
 
