@@ -103,9 +103,11 @@ export default function MusicDock() {
       const data = (await res.json()) as ApiResp;
 
       const list = (data as any)?.stations || [];
-      const cleaned = list
-        .map((s: any) => s as Station)
-        .filter((s) => !!pickStream(s) && !!(s.name || "").trim());
+      const cleaned: Station[] = (list as unknown[])
+        .map((s) => s as Station)
+        .filter(
+          (s: Station) => Boolean(pickStream(s)) && Boolean((s.name ?? "").trim())
+        );
 
       const sh = shuffle(cleaned);
 
