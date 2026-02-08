@@ -23,6 +23,7 @@ export const SIGNAGE_CONFIG = {
     { key: "T.Dreams", label: "DREAMS", logoSrc: "/logos/tdreams.png" },
     { key: "T.Brands", label: "BRANDS", logoSrc: "/logos/tbrands.png" },
     { key: "T.Venues", label: "VENUES", logoSrc: "/logos/tvenues.png" },
+    birthdayPosters: [],
   ],
 
   // Áudio / MusicDock
