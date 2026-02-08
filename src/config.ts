@@ -13,10 +13,18 @@ export const SIGNAGE_CONFIG = {
   refreshWeatherMs: 10 * 60 * 1000,
   refreshNewsMs: 20 * 60 * 1000,
 
-  // Logo do grupo (ajuste quando tiver o arquivo no /public/logos)
-  groupLogoSrc: "/logos/tgroup.png",
+  // ✅ Compat: alguns componentes esperam SIGNAGE_CONFIG.logos?.tgroup etc.
+  // Coloque os arquivos em /public/logos (tgroup.png, tbrands.png, tvenues.png, tdreams.png, tyouth.png)
+  logos: {
+    tgroup: "/logos/tgroup.png",
+    tbrands: "/logos/tbrands.png",
+    tvenues: "/logos/tvenues.png",
+    tdreams: "/logos/tdreams.png",
+    tyouth: "/logos/tyouth.png",
+  },
 
-  // Logos das empresas (ajuste quando tiver os arquivos no /public/logos)
+  // ✅ V2/V3 também podem usar esses campos
+  groupLogoSrc: "/logos/tgroup.png",
   brandTabs: [
     { key: "T.Brands", label: "BRANDS", logoSrc: "/logos/tbrands.png" },
     { key: "T.Venues", label: "VENUES", logoSrc: "/logos/tvenues.png" },
@@ -24,7 +32,7 @@ export const SIGNAGE_CONFIG = {
     { key: "T.Youth", label: "YOUTH", logoSrc: "/logos/tyouth.png" },
   ],
 
-  // Posters de aniversariantes (coloque os PNGs em /public/birthdays)
+  // Posters de aniversariantes (PNG em /public/birthdays)
   birthdayPosters: [
     { mmdd: "0302", src: "/birthdays/0302_BDAY_GIU_TG.png", label: "Giu" },
     { mmdd: "1302", src: "/birthdays/1302_BDAY_MATEUS_TG.png", label: "Mateus" },
@@ -35,7 +43,6 @@ export const SIGNAGE_CONFIG = {
   defaultTicker: "Bem-vindos ao T.Group • Segurança e respeito sempre • Bom trabalho, time •",
 
   // News RSS (Google News BR)
-  // Formato padrão do RSS do Google News com parâmetros hl/gl/ceid.
   newsRssUrl: "https://news.google.com/rss?hl=pt-BR&gl=BR&ceid=BR:pt-419",
 
   // Música (MusicDock lê isso)
