@@ -351,3 +351,20 @@ export default function Page() {
     </div>
   );
 }
+import AgencyBackdrop from "@/components/AgencyBackdrop";
+import MusicDock from "@/components/MusicDock";
+
+export default function Page() {
+  return (
+    <main className="relative min-h-screen w-full bg-black text-white overflow-hidden">
+      <AgencyBackdrop />
+
+      {/* seu conteúdo de cenas aqui */}
+      <div className="relative z-10">
+        {/* ... */}
+      </div>
+
+      <MusicDock />
+    </main>
+  );
+}
