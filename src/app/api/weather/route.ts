@@ -12,18 +12,25 @@ export async function GET() {
     "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,weather_code" +
     "&timezone=America%2FSao_Paulo";
 
-  const res = await fetch(url, { next: { revalidate: 300 } });
-  if (!res.ok) {
+  try {
+    const res = await fetch(url, { next: { revalidate: 300 } });
+    if (!res.ok) {
+      return NextResponse.json(
+        { ok: false, error: `Weather fetch failed (${res.status})` },
+        { status: 502 }
+      );
+    }
+
+    const data = await res.json();
+
     return NextResponse.json(
-      { ok: false, error: `Weather fetch failed (${res.status})` },
-      { status: 500 }
+      { ok: true, data },
+      { headers: { "Cache-Control": "s-maxage=300, stale-while-revalidate=600" } }
+    );
+  } catch {
+    return NextResponse.json(
+      { ok: false, error: "Weather fetch failed (network error)" },
+      { status: 502 }
     );
   }
-
-  const data = await res.json();
-
-  return NextResponse.json(
-    { ok: true, data },
-    { headers: { "Cache-Control": "s-maxage=300, stale-while-revalidate=600" } }
-  );
 }
