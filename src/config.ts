@@ -55,7 +55,6 @@ export const SIGNAGE_CONFIG = {
       logoSrc: "/logos/tyouth.png",
     },
   ],
-,
 
   // Posters de aniversariantes (PNG em /public/birthdays)
   birthdayPosters: [
