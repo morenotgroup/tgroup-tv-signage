@@ -8,23 +8,23 @@ function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
-function toMmdd(d: Date) {
-  return `${pad2(d.getDate())}${pad2(d.getMonth() + 1)}`; // ddmm
-}
-
-// (Você usa mmdd no config como "0302" (03/02) -> aqui vou converter pra isso)
-function toMmddConfigKey(d: Date) {
-  return `${pad2(d.getMonth() + 1)}${pad2(d.getDate())}`; // mmdd
-}
-
 function formatTimePtBR(now: Date) {
   return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(now);
 }
 
 function formatDatePtBR(now: Date) {
-  return new Intl.DateTimeFormat("pt-BR", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).format(
-    now
-  );
+  return new Intl.DateTimeFormat("pt-BR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    year: "numeric",
+  }).format(now);
+}
+
+function formatMonthPtBR(monthIndex: number) {
+  // monthIndex: 0..11
+  const d = new Date(2026, monthIndex, 1);
+  return new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(d);
 }
 
 type WeatherLike = {
@@ -36,8 +36,6 @@ type WeatherLike = {
   icon?: string;
   emoji?: string;
 };
-
-type NewsLike = { title?: string }[];
 
 function safeHeadlines(payload: any): string[] {
   const items = payload?.items || payload?.news || payload?.articles || payload?.headlines || [];
@@ -52,6 +50,12 @@ function safeHeadlines(payload: any): string[] {
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
+}
+
+function readTempC(weather: WeatherLike | null): number | null {
+  if (!weather) return null;
+  const v = Number(weather.tempC ?? weather.temp ?? weather.temperature ?? NaN);
+  return Number.isFinite(v) ? v : null;
 }
 
 export default function SignagePremium() {
@@ -72,40 +76,14 @@ export default function SignagePremium() {
     }
   }, []);
 
+  const monthIndex = now.getMonth(); // 0..11
+  const monthKey = useMemo(() => pad2(monthIndex + 1), [monthIndex]);
+
   // clock tick
   useEffect(() => {
     const t = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
-
-  // rotate scenes
-  useEffect(() => {
-    const ms = clamp(Number(SIGNAGE_CONFIG.sceneDurationMs || 14000), 7000, 60000);
-    const t = setInterval(() => setScene((s) => (s + 1) % 4), ms);
-    return () => clearInterval(t);
-  }, []);
-
-  // wake lock (best-effort)
-  useEffect(() => {
-    async function lock() {
-      try {
-        // @ts-ignore
-        if ("wakeLock" in navigator && tvMode) {
-          // @ts-ignore
-          wakeLockRef.current = await navigator.wakeLock.request("screen");
-        }
-      } catch {
-        // ignore (nem toda TV suporta)
-      }
-    }
-    void lock();
-
-    return () => {
-      try {
-        wakeLockRef.current?.release?.();
-      } catch {}
-    };
-  }, [tvMode]);
 
   // fetch weather/news
   useEffect(() => {
@@ -141,23 +119,79 @@ export default function SignagePremium() {
     };
   }, []);
 
-  // birthdays pick
+  // wake lock (best-effort)
+  useEffect(() => {
+    async function lock() {
+      try {
+        // @ts-ignore
+        if ("wakeLock" in navigator && tvMode) {
+          // @ts-ignore
+          wakeLockRef.current = await navigator.wakeLock.request("screen");
+        }
+      } catch {
+        // ignore
+      }
+    }
+    void lock();
+
+    return () => {
+      try {
+        wakeLockRef.current?.release?.();
+      } catch {}
+    };
+  }, [tvMode]);
+
+  // ===== Birthdays (robusto: casa mmdd e ddmm) =====
   const birthdayPoster = useMemo(() => {
-    const key = toMmddConfigKey(now); // mmdd
+    const mmddKey = `${pad2(monthIndex + 1)}${pad2(now.getDate())}`; // mmdd
+    const ddmmKey = `${pad2(now.getDate())}${pad2(monthIndex + 1)}`; // ddmm
+
     const list = SIGNAGE_CONFIG.birthdayPosters || [];
-    const exact = list.find((x) => x.mmdd === key);
+
+    const exact =
+      list.find((x) => x.mmdd === mmddKey) ||
+      list.find((x) => x.mmdd === ddmmKey);
+
     if (exact) return exact;
 
-    // se não tiver aniversariante no dia, mostra “do mês” (rotaciona)
-    const month = pad2(now.getMonth() + 1);
-    const monthList = list.filter((x) => x.mmdd.startsWith(month));
+    // Sem aniversariante no dia → faz rotação "do mês"
+    // Aceita config tanto no formato mmdd (começa com MM) quanto ddmm (termina com MM)
+    const monthList = list.filter((x) => x.mmdd.startsWith(monthKey) || x.mmdd.endsWith(monthKey));
     if (monthList.length) {
       const i = Math.floor((now.getTime() / (SIGNAGE_CONFIG.sceneDurationMs || 14000)) % monthList.length);
       return monthList[i];
     }
 
     return null;
-  }, [now]);
+  }, [monthIndex, monthKey, now]);
+
+  // ===== Welcomers (chegadas do mês) =====
+  const welcomeMonthList = useMemo(() => {
+    const list = SIGNAGE_CONFIG.welcomePosters || [];
+    return list.filter((x) => x.mm === monthKey);
+  }, [monthKey]);
+
+  const welcomeCards = useMemo(() => {
+    if (!welcomeMonthList.length) return [];
+    const max = 2; // cards por tela (fica lindo em TV 16:9)
+    const start = Math.floor((now.getTime() / (SIGNAGE_CONFIG.sceneDurationMs || 14000)) % welcomeMonthList.length);
+    const out: typeof welcomeMonthList = [];
+    for (let i = 0; i < Math.min(max, welcomeMonthList.length); i++) {
+      out.push(welcomeMonthList[(start + i) % welcomeMonthList.length]);
+    }
+    return out;
+  }, [welcomeMonthList, now]);
+
+  const hasWelcomersThisMonth = welcomeMonthList.length > 0;
+
+  // rotate scenes
+  useEffect(() => {
+    const ms = clamp(Number(SIGNAGE_CONFIG.sceneDurationMs || 14000), 7000, 60000);
+    const sceneCount = hasWelcomersThisMonth ? 5 : 4; // adiciona a cena 4 só se tiver welcomer no mês
+
+    const t = setInterval(() => setScene((s) => (s + 1) % sceneCount), ms);
+    return () => clearInterval(t);
+  }, [hasWelcomersThisMonth]);
 
   const tickerText = useMemo(() => {
     const t = headlines.length ? headlines.join(" • ") : SIGNAGE_CONFIG.defaultTicker;
@@ -166,10 +200,8 @@ export default function SignagePremium() {
 
   async function onEnterFullscreen() {
     try {
-      const el = document.documentElement;
-      // @ts-ignore
+      const el = document.documentElement as any;
       if (el.requestFullscreen) await el.requestFullscreen();
-      // @ts-ignore
       else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
     } catch {
       // TVs variam
@@ -196,9 +228,11 @@ export default function SignagePremium() {
     );
   }
 
+  const tempC = readTempC(weather);
+  const tempLabel = tempC == null ? "—" : `${Math.round(tempC)}°C`;
+
   return (
     <div className="tg_root">
-      {/* BACKDROP: gradiente + drift (bem “monitor premium”) */}
       <div className="tg_backdrop" />
 
       {/* HUD TOP */}
@@ -241,14 +275,14 @@ export default function SignagePremium() {
         </div>
       ) : null}
 
-      {/* SCENES */}
+      {/* STAGE */}
       <div className="tg_stage">
         {/* Scene 0: Hero */}
         <div className={`tg_scene ${scene === 0 ? "isActive" : ""}`}>
           <div className="tg_sceneInner">
             <div className="tg_bigTitle">Bem-vindos</div>
             <div className="tg_bigSub">
-              {SIGNAGE_CONFIG.locationLabel} • {weather ? "Clima ao vivo" : "Painel ao vivo"}
+              {SIGNAGE_CONFIG.locationLabel} • {weather ? "Clima ao vivo" : "Painel ao vivo"} • {tempLabel}
             </div>
 
             <div className="tg_kpis">
@@ -266,7 +300,11 @@ export default function SignagePremium() {
               </div>
             </div>
 
-            {tvMode ? <div className="tg_hint">Dica: mantenha a TV em “Tela cheia”. O som pode precisar de 1 OK em “Ativar som”.</div> : null}
+            {tvMode ? (
+              <div className="tg_hint">
+                Dica: mantenha a TV em “Tela cheia”. O som pode precisar de 1 OK em “Ativar som”.
+              </div>
+            ) : null}
           </div>
         </div>
 
@@ -292,12 +330,7 @@ export default function SignagePremium() {
             <div className="tg_weatherRow">
               <div className="tg_weatherIcon">{weather?.emoji || "⛅️"}</div>
               <div className="tg_weatherMeta">
-                <div className="tg_weatherTemp">
-                  {Math.round(
-                    Number(weather?.tempC ?? weather?.temp ?? weather?.temperature ?? NaN)
-                  ) || "—"}
-                  °C
-                </div>
+                <div className="tg_weatherTemp">{tempLabel}</div>
                 <div className="tg_weatherDesc">{weather?.description || weather?.condition || "São Paulo"}</div>
               </div>
             </div>
@@ -309,28 +342,78 @@ export default function SignagePremium() {
           <div className="tg_sceneInner">
             <div className="tg_bigTitle">Manchetes</div>
             <div className="tg_news">
-              {(headlines.length ? headlines : ["Sem manchetes por enquanto — conectando…"]).slice(0, 5).map((t, i) => (
-                <div key={i} className="tg_newsItem">
-                  <span className="tg_bullet" />
-                  <span className="tg_newsText">{t}</span>
-                </div>
-              ))}
+              {(headlines.length ? headlines : ["Sem manchetes por enquanto — conectando…"])
+                .slice(0, 5)
+                .map((t, i) => (
+                  <div key={i} className="tg_newsItem">
+                    <span className="tg_bullet" />
+                    <span className="tg_newsText">{t}</span>
+                  </div>
+                ))}
             </div>
           </div>
         </div>
+
+        {/* Scene 4: Chegadas do mês (só existe se tiver welcomer no mês) */}
+        {hasWelcomersThisMonth ? (
+          <div className={`tg_scene ${scene === 4 ? "isActive" : ""}`}>
+            <div className="tg_sceneInner tg_welcome">
+              <div className="tg_welcomeHeader">
+                <div className="tg_welcomeTitle">Chegadas do mês</div>
+                <div className="tg_welcomeSub">
+                  {formatMonthPtBR(monthIndex)} • nova energia no ar ✨
+                </div>
+              </div>
+
+              <div
+                className="tg_welcomeGrid"
+                style={{
+                  gridTemplateColumns: `repeat(${Math.max(1, welcomeCards.length)}, minmax(0, 1fr))`,
+                }}
+              >
+                {welcomeCards.map((c, idx) => (
+                  <div key={`${c.src}-${idx}`} className="tg_welcomeCard" style={{ animationDelay: `${idx * 220}ms` }}>
+                    <div className="tg_welcomeGlow" />
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img className="tg_welcomeImg" src={c.src} alt={c.label || "Chegada do mês"} />
+                    {c.label ? <div className="tg_welcomeCaption">{c.label}</div> : null}
+                  </div>
+                ))}
+              </div>
+
+              <div className="tg_welcomeHint">
+                Dica GC: quer trocar as artes do mês? Só subir em <span className="tg_code">/public/signage/welcome</span> e atualizar o{" "}
+                <span className="tg_code">welcomePosters</span> no config.
+              </div>
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      {/* Ticker bottom */}
+      {/* Footer premium (novo) */}
       <div className="tg_bottom">
-        <div className="tg_ticker">
-          <div className="tg_tickerTrack">
-            <span>{tickerText}</span>
-            <span>{tickerText}</span>
+        <div className="tg_footer">
+          <div className="tg_live">
+            <span className="tg_liveDot" />
+            <span className="tg_liveTxt">LIVE</span>
+          </div>
+
+          <div className="tg_ticker">
+            <div className="tg_tickerTrack">
+              <span>{tickerText}</span>
+              <span>{tickerText}</span>
+            </div>
+            <div className="tg_tickerFade tg_leftFade" />
+            <div className="tg_tickerFade tg_rightFade" />
+          </div>
+
+          <div className="tg_footerMeta">
+            <span className="tg_metaChip">{tempLabel}</span>
+            <span className="tg_metaChip">{SIGNAGE_CONFIG.locationLabel}</span>
           </div>
         </div>
       </div>
 
-      {/* Music overlay */}
       <MusicDock />
 
       <style jsx global>{`
@@ -344,7 +427,7 @@ export default function SignagePremium() {
           font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
         }
 
-        /* BACKDROP: drift + vinheta */
+        /* BACKDROP */
         .tg_backdrop {
           position: absolute;
           inset: -40%;
@@ -357,7 +440,6 @@ export default function SignagePremium() {
           filter: blur(28px) saturate(115%);
           animation: tg_drift 18s ease-in-out infinite alternate;
         }
-
         @keyframes tg_drift {
           from { transform: translate3d(-1%, -1%, 0) scale(1.02); }
           to   { transform: translate3d( 1%,  1%, 0) scale(1.04); }
@@ -523,6 +605,7 @@ export default function SignagePremium() {
           opacity: 0.7;
         }
 
+        /* Weather */
         .tg_weatherRow {
           margin-top: 22px;
           display: flex;
@@ -544,6 +627,7 @@ export default function SignagePremium() {
           opacity: 0.78;
         }
 
+        /* News */
         .tg_news {
           margin-top: 18px;
           display: grid;
@@ -573,32 +657,235 @@ export default function SignagePremium() {
           opacity: 0.92;
         }
 
-        /* Bottom ticker */
+        /* Welcome scene */
+        .tg_welcome {
+          position: relative;
+        }
+        .tg_welcomeHeader {
+          display: flex;
+          align-items: baseline;
+          justify-content: space-between;
+          gap: 18px;
+          margin-bottom: 18px;
+        }
+        .tg_welcomeTitle {
+          font-size: 58px;
+          font-weight: 950;
+          letter-spacing: -0.05em;
+          line-height: 1;
+          text-shadow: 0 24px 70px rgba(0,0,0,0.55);
+        }
+        .tg_welcomeSub {
+          opacity: 0.78;
+          font-size: 14px;
+          text-transform: lowercase;
+          white-space: nowrap;
+        }
+
+        .tg_welcomeGrid {
+          display: grid;
+          gap: 18px;
+          align-items: stretch;
+          margin-top: 10px;
+        }
+
+        .tg_welcomeCard {
+          position: relative;
+          border-radius: 26px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.06);
+          overflow: hidden;
+          min-height: 46vh;
+          box-shadow: 0 36px 140px rgba(0,0,0,0.55);
+          transform: translateY(10px) scale(0.99);
+          opacity: 0;
+          animation: tg_welcomeIn 850ms ease forwards, tg_cardFloat 6.5s ease-in-out infinite alternate;
+          backdrop-filter: blur(14px);
+        }
+
+        @keyframes tg_welcomeIn {
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
+        @keyframes tg_cardFloat {
+          from { transform: translateY(0) scale(1); }
+          to   { transform: translateY(-8px) scale(1.01); }
+        }
+
+        .tg_welcomeGlow {
+          position: absolute;
+          inset: -40%;
+          background:
+            radial-gradient(35% 35% at 20% 30%, rgba(255, 120, 60, 0.35), transparent 65%),
+            radial-gradient(35% 35% at 75% 25%, rgba(120, 160, 255, 0.25), transparent 65%),
+            radial-gradient(35% 35% at 70% 80%, rgba(20, 240, 220, 0.18), transparent 65%);
+          filter: blur(18px);
+          opacity: 0.9;
+          pointer-events: none;
+        }
+
+        .tg_welcomeImg {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          object-fit: contain; /* mantém a arte inteira (sem crop) */
+          padding: 10px;
+          display: block;
+        }
+
+        .tg_welcomeCaption {
+          position: absolute;
+          left: 14px;
+          right: 14px;
+          bottom: 12px;
+          padding: 10px 12px;
+          border-radius: 16px;
+          background: rgba(0,0,0,0.45);
+          border: 1px solid rgba(255,255,255,0.10);
+          backdrop-filter: blur(10px);
+          font-weight: 900;
+          letter-spacing: -0.01em;
+          font-size: 14px;
+        }
+
+        .tg_welcomeHint {
+          margin-top: 14px;
+          font-size: 12px;
+          opacity: 0.7;
+        }
+        .tg_code {
+          font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+          font-size: 12px;
+          padding: 2px 8px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.10);
+          background: rgba(255,255,255,0.06);
+        }
+
+        /* Footer premium */
         .tg_bottom {
           position: relative;
           z-index: 15;
           padding: 14px 28px 24px;
         }
+
+        .tg_footer {
+          display: grid;
+          grid-template-columns: auto 1fr auto;
+          gap: 12px;
+          align-items: center;
+          padding: 12px 14px;
+          border-radius: 24px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(0,0,0,0.42);
+          backdrop-filter: blur(12px);
+          box-shadow: 0 26px 110px rgba(0,0,0,0.55);
+          position: relative;
+          overflow: hidden;
+        }
+
+        .tg_footer::before {
+          content: "";
+          position: absolute;
+          inset: -30%;
+          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+          transform: rotate(8deg);
+          animation: tg_footerShine 7.5s ease-in-out infinite;
+          pointer-events: none;
+          opacity: 0.8;
+        }
+        @keyframes tg_footerShine {
+          from { transform: translateX(-10%) rotate(8deg); }
+          to   { transform: translateX(10%) rotate(8deg); }
+        }
+
+        .tg_live {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.06);
+          font-weight: 900;
+          letter-spacing: 0.18em;
+          font-size: 11px;
+          text-transform: uppercase;
+          position: relative;
+          z-index: 1;
+        }
+        .tg_liveDot {
+          height: 10px;
+          width: 10px;
+          border-radius: 999px;
+          background: rgba(255, 80, 80, 0.95);
+          box-shadow: 0 0 0 6px rgba(255, 80, 80, 0.14);
+          animation: tg_pulse 1.3s ease-in-out infinite;
+        }
+        @keyframes tg_pulse {
+          0%, 100% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.08); opacity: 0.85; }
+        }
+        .tg_liveTxt { opacity: 0.95; }
+
         .tg_ticker {
+          position: relative;
           border-radius: 999px;
           border: 1px solid rgba(255,255,255,0.10);
-          background: rgba(0,0,0,0.40);
+          background: rgba(0,0,0,0.35);
           overflow: hidden;
           backdrop-filter: blur(10px);
-          box-shadow: 0 24px 90px rgba(0,0,0,0.50);
+          z-index: 1;
         }
+
         .tg_tickerTrack {
           display: inline-flex;
           gap: 56px;
           white-space: nowrap;
           padding: 12px 18px;
-          animation: tg_marquee 26s linear infinite;
+          animation: tg_marquee 24s linear infinite;
           font-size: 14px;
-          opacity: 0.9;
+          opacity: 0.92;
+          will-change: transform;
         }
         @keyframes tg_marquee {
           from { transform: translateX(0); }
           to   { transform: translateX(-50%); }
+        }
+
+        .tg_tickerFade {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 70px;
+          pointer-events: none;
+        }
+        .tg_leftFade {
+          left: 0;
+          background: linear-gradient(90deg, rgba(0,0,0,0.65), transparent);
+        }
+        .tg_rightFade {
+          right: 0;
+          background: linear-gradient(270deg, rgba(0,0,0,0.65), transparent);
+        }
+
+        .tg_footerMeta {
+          display: inline-flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 10px;
+          position: relative;
+          z-index: 1;
+        }
+        .tg_metaChip {
+          padding: 10px 12px;
+          border-radius: 999px;
+          border: 1px solid rgba(255,255,255,0.12);
+          background: rgba(255,255,255,0.06);
+          font-size: 12px;
+          opacity: 0.88;
+          white-space: nowrap;
         }
 
         /* Responsive */
@@ -607,6 +894,18 @@ export default function SignagePremium() {
           .tg_bigTitle { font-size: 46px; }
           .tg_stage { min-height: 62vh; }
           .tg_tabs { display: none; }
+          .tg_footerMeta { display: none; }
+          .tg_welcomeTitle { font-size: 42px; }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+          .tg_backdrop,
+          .tg_tickerTrack,
+          .tg_footer::before,
+          .tg_liveDot,
+          .tg_welcomeCard {
+            animation: none !important;
+          }
         }
       `}</style>
     </div>
