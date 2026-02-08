@@ -1,13 +1,26 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import MusicDock from "@/components/MusicDock";
 import { SIGNAGE_CONFIG } from "@/config";
 
 type WeatherState =
-  | { ok: true; tempC: number; humidity: number; windKmh: number; code: number }
-  | { ok: false; error: string };
+  | {
+      ok: true;
+      tempC: number;
+      humidity: number;
+      windKmh: number;
+      code: number;
+      source: string;
+    }
+  | { ok: false; error: string; source: string };
 
-type NewsItem = { title: string; link: string; pubDate: string; source: string };
+type NewsItem = {
+  title: string;
+  link: string;
+  pubDate: string;
+  source: string;
+};
 
 type Birthday = { name: string; month: number; day: number; team?: string };
 
@@ -16,7 +29,7 @@ function formatDatePtBR(d: Date) {
     weekday: "long",
     day: "2-digit",
     month: "long",
-    year: "numeric"
+    year: "numeric",
   });
 }
 
@@ -29,7 +42,6 @@ function pad2(n: number) {
 }
 
 function weatherLabel(code: number) {
-  // Mapeamento simples (wmo weathercode) — suficiente pra signage
   if ([0].includes(code)) return "Céu limpo";
   if ([1, 2, 3].includes(code)) return "Parcialmente nublado";
   if ([45, 48].includes(code)) return "Neblina";
@@ -45,7 +57,12 @@ export default function Page() {
   const [now, setNow] = useState(new Date());
   const [scene, setScene] = useState(0);
 
-  const [weather, setWeather] = useState<WeatherState>({ ok: false, error: "carregando..." });
+  const [weather, setWeather] = useState<WeatherState>({
+    ok: false,
+    error: "carregando…",
+    source: "open-meteo",
+  });
+
   const [news, setNews] = useState<NewsItem[]>([]);
   const [birthdays, setBirthdays] = useState<Birthday[]>([]);
   const [lastSync, setLastSync] = useState<Date | null>(null);
@@ -56,7 +73,7 @@ export default function Page() {
     return () => clearInterval(t);
   }, []);
 
-  // rotação de cenas
+  // rotação
   useEffect(() => {
     const t = setInterval(() => {
       setScene((s) => (s + 1) % 4);
@@ -64,16 +81,16 @@ export default function Page() {
     return () => clearInterval(t);
   }, []);
 
-  // dados
+  // carga de dados
   useEffect(() => {
     let alive = true;
 
     async function loadAll() {
       try {
         const [w, n, b] = await Promise.all([
-          fetch("/api/weather").then((r) => r.json()),
-          fetch("/api/news").then((r) => r.json()),
-          fetch("/api/birthdays").then((r) => r.json())
+          fetch("/api/weather", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/news", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/birthdays", { cache: "no-store" }).then((r) => r.json()),
         ]);
 
         if (!alive) return;
@@ -85,10 +102,15 @@ export default function Page() {
             tempC: Number(c.temperature_2m ?? 0),
             humidity: Number(c.relative_humidity_2m ?? 0),
             windKmh: Number(c.wind_speed_10m ?? 0),
-            code: Number(c.weather_code ?? 0)
+            code: Number(c.weather_code ?? 0),
+            source: "open-meteo",
           });
         } else {
-          setWeather({ ok: false, error: w?.error ?? "Falha no clima" });
+          setWeather({
+            ok: false,
+            error: w?.error ?? "Falha no clima",
+            source: "open-meteo",
+          });
         }
 
         if (n?.ok && Array.isArray(n.items)) {
@@ -104,9 +126,13 @@ export default function Page() {
         }
 
         setLastSync(new Date());
-      } catch (e: any) {
+      } catch {
         if (!alive) return;
-        setWeather({ ok: false, error: "Sem conexão com as APIs" });
+        setWeather({
+          ok: false,
+          error: "Sem conexão com as APIs",
+          source: "open-meteo",
+        });
         setNews([]);
       }
     }
@@ -140,13 +166,23 @@ export default function Page() {
     const pieces: string[] = [];
     pieces.push(`${SIGNAGE_CONFIG.companyName} — ${SIGNAGE_CONFIG.locationLabel}`);
     if (weather.ok) pieces.push(`${Math.round(weather.tempC)}°C • ${weatherLabel(weather.code)}`);
-    if (birthdaysOfMonth.length) pieces.push(`Aniversariantes do mês: ${birthdaysOfMonth.map((b) => `${b.name} (${pad2(b.day)}/${pad2(b.month)})`).join(" • ")}`);
-    if (news.length) pieces.push(`Manchetes: ${news.slice(0, 5).map((n) => n.title).join(" • ")}`);
+    if (birthdaysOfMonth.length) {
+      pieces.push(
+        `Aniversariantes do mês: ${birthdaysOfMonth
+          .slice(0, 12)
+          .map((b) => `${b.name} (${pad2(b.day)}/${pad2(b.month)})`)
+          .join(" • ")}`
+      );
+    }
+    if (news.length) pieces.push(`Manchetes: ${news.slice(0, 6).map((n) => n.title).join(" • ")}`);
     return pieces.join("  —  ");
   }, [weather, birthdaysOfMonth, news]);
 
   return (
     <div className="stage">
+      {/* Dock fixo de música (Radio Browser). Fica por cima e você liga quando quiser */}
+      <MusicDock />
+
       <div className="topRow">
         <div className="brand">
           <div className="brandMark" />
@@ -168,8 +204,8 @@ export default function Page() {
           <div className={`scene ${scene === 0 ? "active" : ""}`}>
             <h1 className="h1">Bem-vindos 👋</h1>
             <p className="p">
-              Informações rápidas, clima em tempo real, aniversariantes do mês e manchetes — tudo em uma experiência
-              bonita e viva, do jeito que a casa merece.
+              Uma experiência viva para recepção: clima, aniversariantes do mês, manchetes e recados — com cara de
+              prédio premium.
             </p>
 
             <div className="kpis">
@@ -191,7 +227,7 @@ export default function Page() {
           {/* Cena 1: Clima */}
           <div className={`scene ${scene === 1 ? "active" : ""}`}>
             <h1 className="h1">Clima agora</h1>
-            <p className="p">Atualização automática. Perfeito pra planejar ida/volta, eventos e rolês.</p>
+            <p className="p">Atualiza automaticamente. Ótimo pra entrada/saída e dia de evento.</p>
 
             <div className="kpis">
               <div className="kpi">
@@ -210,8 +246,12 @@ export default function Page() {
 
             <div className="item">
               <div>
-                <div className="title">{weather.ok ? weatherLabel(weather.code) : "Sem dados no momento"}</div>
-                <div className="meta">{weather.ok ? "Fonte: Open-Meteo" : (weather as any).error}</div>
+                <div className="title">
+                  {weather.ok ? weatherLabel(weather.code) : "Sem dados no momento"}
+                </div>
+                <div className="meta">
+                  {weather.ok ? `Fonte: ${weather.source}` : (weather as any).error}
+                </div>
               </div>
               <div className="pill">Auto</div>
             </div>
@@ -221,14 +261,15 @@ export default function Page() {
           <div className={`scene ${scene === 2 ? "active" : ""}`}>
             <h1 className="h1">Aniversariantes do mês 🎂</h1>
             <p className="p">
-              Mesmo se hoje não tiver ninguém, a TV mantém o clima bom mostrando o mês inteiro (é isso que faz ficar “vivo”).
+              Mesmo se hoje não tiver ninguém, a TV mantém o clima bom mostrando o mês inteiro.
             </p>
 
             <div className="grid2">
               <div className="card" style={{ height: "100%" }}>
-                <div className="title" style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
+                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
                   Hoje
                 </div>
+
                 {todayBirthdays.length ? (
                   <div className="list">
                     {todayBirthdays.map((b) => (
@@ -250,15 +291,18 @@ export default function Page() {
               </div>
 
               <div className="card" style={{ height: "100%" }}>
-                <div className="title" style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
+                <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 12 }}>
                   No mês
                 </div>
+
                 <div className="list">
                   {birthdaysOfMonth.length ? (
-                    birthdaysOfMonth.slice(0, 8).map((b) => (
+                    birthdaysOfMonth.slice(0, 10).map((b) => (
                       <div className="item" key={`${b.name}-${b.day}-${b.month}`}>
                         <div className="title">{b.name}</div>
-                        <div className="meta">{pad2(b.day)}/{pad2(b.month)} • {b.team ?? "—"}</div>
+                        <div className="meta">
+                          {pad2(b.day)}/{pad2(b.month)} • {b.team ?? "—"}
+                        </div>
                       </div>
                     ))
                   ) : (
@@ -275,11 +319,11 @@ export default function Page() {
           {/* Cena 3: Notícias */}
           <div className={`scene ${scene === 3 ? "active" : ""}`}>
             <h1 className="h1">Manchetes</h1>
-            <p className="p">Giro rápido — só pra manter a recepção com cara de “prédio premium”.</p>
+            <p className="p">Giro rápido só pra manter a recepção com energia de “prédio premium”.</p>
 
             <div className="list" style={{ marginTop: 10 }}>
               {news.length ? (
-                news.slice(0, 8).map((n, idx) => (
+                news.slice(0, 10).map((n, idx) => (
                   <div className="item" key={`${idx}-${n.title}`}>
                     <div className="title">{n.title}</div>
                     <div className="meta">{n.source || "Google News"}</div>
@@ -288,7 +332,7 @@ export default function Page() {
               ) : (
                 <div className="item">
                   <div className="title">Sem manchetes no momento</div>
-                  <div className="meta">Quando a conexão voltar, volta a preencher sozinho.</div>
+                  <div className="meta">Quando voltar a conexão, preenche sozinho.</div>
                 </div>
               )}
             </div>
@@ -307,21 +351,3 @@ export default function Page() {
     </div>
   );
 }
-import MusicDock from "@/components/MusicDock";
-
-export default function Page() {
-  return (
-    <main className="min-h-screen w-full bg-black text-white">
-      {/* Seu conteúdo/rotina de cenas aqui */}
-      <div className="p-10">
-        <h1 className="text-4xl font-semibold">T.Group • TV Signage</h1>
-        <p className="opacity-70 mt-2">
-          Deixa essa aba aberta na TV (kiosk/fullscreen) e pronto.
-        </p>
-      </div>
-
-      <MusicDock />
-    </main>
-  );
-}
-
