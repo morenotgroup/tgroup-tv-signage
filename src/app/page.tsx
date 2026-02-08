@@ -1,10 +1,7 @@
-import SignageV2 from "@/signage/SignageV2";
+"use client";
 
-type PageProps = {
-  searchParams?: Record<string, string | string[] | undefined>;
-};
+import SignagePremium from "../signage/SignagePremium";
 
-export default function Page(_props: PageProps) {
-  // O SignageV2 lê ?tv=1 no client (TV mode)
-  return <SignageV2 />;
+export default function Page() {
+  return <SignagePremium />;
 }
