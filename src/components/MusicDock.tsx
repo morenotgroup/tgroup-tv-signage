@@ -2,127 +2,294 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
+type RadioProfileId = "agency" | "focus" | "chill";
+
 type Station = {
-  stationuuid: string;
+  id: string;
   name: string;
-  url_resolved: string;
+  streamUrl: string;
   favicon?: string;
-  tags?: string;
-  countrycode?: string;
+  country?: string;
   codec?: string;
   bitrate?: number;
 };
 
 type ApiResp = {
   ok: boolean;
-  stations: Station[];
-};
-
-type ProfileKey = "agency" | "focus" | "chill";
-
-type MusicDockPrefs = {
-  volume: number;
-  shuffle: boolean;
-  profile: ProfileKey;
-  lastStationId?: string;
+  profile?: RadioProfileId;
+  label?: string;
+  count?: number;
+  stations?: Station[];
+  error?: string;
 };
 
 type PlayerStatus =
   | "idle"
+  | "loading"
+  | "ready"
   | "buffering"
   | "playing"
   | "paused"
-  | "error"
-  | "blocked";
+  | "blocked"
+  | "error";
 
-const PREFS_KEY = "musicDockPrefs";
-const MAX_CONSECUTIVE_FAILURES = 4;
-
-const PROFILE_CONFIG: Record<
-  ProfileKey,
-  { label: string; tag: string; subtitle: string }
-> = {
-  agency: { label: "Agency", tag: "lofi", subtitle: "Brand-safe groove" },
-  focus: { label: "Focus", tag: "jazz", subtitle: "Deep work, low noise" },
-  chill: { label: "Chill", tag: "chill", subtitle: "Lounge reception vibe" },
+const LS_KEYS = {
+  profile: "tgroup_tv_profile",
+  volume: "tgroup_tv_volume",
+  lastStationId: "tgroup_tv_last_station_id",
+  favorites: "tgroup_tv_favorites",
 };
+
+const DEFAULT_VOLUME = 0.35;
+const MAX_FAILS_BEFORE_REFETCH = 5;
 
 function clamp(n: number, a: number, b: number) {
   return Math.max(a, Math.min(b, n));
 }
 
+function shuffle<T>(arr: T[]) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function safeJsonParse<T>(raw: string | null, fallback: T): T {
+  if (!raw) return fallback;
+  try {
+    return JSON.parse(raw) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export default function MusicDock() {
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastRecoveryRef = useRef(0);
-  const failureCountRef = useRef(0);
 
-  const [enabled, setEnabled] = useState(false);
-  const [loadingStations, setLoadingStations] = useState(true);
+  const switchingRef = useRef(false);
+  const failsRef = useRef(0);
+  const lastActionRef = useRef<number>(0);
+
+  const [profile, setProfile] = useState<RadioProfileId>("agency");
   const [stations, setStations] = useState<Station[]>([]);
   const [idx, setIdx] = useState(0);
 
-  const [volume, setVolume] = useState(0.25);
-  const [shuffle, setShuffle] = useState(false);
-  const [profile, setProfile] = useState<ProfileKey>("agency");
-  const [lastStationId, setLastStationId] = useState<string | undefined>(
-    undefined,
-  );
   const [status, setStatus] = useState<PlayerStatus>("idle");
+  const [msg, setMsg] = useState<string>("");
+  const [armed, setArmed] = useState<boolean>(false); // “usuário já clicou uma vez”
+  const [panelOpen, setPanelOpen] = useState(false);
 
-  const station = useMemo(() => stations[idx], [stations, idx]);
+  const [uiNudge, setUiNudge] = useState({ x: 0, y: 0 }); // anti burn-in
+  const favorites = useMemo(() => {
+    if (typeof window === "undefined") return {} as Record<string, true>;
+    return safeJsonParse<Record<string, true>>(
+      window.localStorage.getItem(LS_KEYS.favorites),
+      {}
+    );
+  }, []);
 
-  function clearRetryTimer() {
-    if (retryTimerRef.current) {
-      clearTimeout(retryTimerRef.current);
-      retryTimerRef.current = null;
-    }
-  }
+  const [favMap, setFavMap] = useState<Record<string, true>>({});
 
-  function pickRandomIndex(current: number, total: number) {
-    if (total <= 1) return current;
-    let next = current;
-    while (next === current) {
-      next = Math.floor(Math.random() * total);
-    }
-    return next;
-  }
+  const current = stations.length ? stations[clamp(idx, 0, stations.length - 1)] : null;
 
-  async function loadStations(targetProfile: ProfileKey) {
-    setLoadingStations(true);
+  // --- Boot: prefs
+  useEffect(() => {
     try {
-      const profileCfg = PROFILE_CONFIG[targetProfile];
-      const r = await fetch(
-        `/api/radio?tag=${encodeURIComponent(profileCfg.tag)}&profile=${encodeURIComponent(targetProfile)}&countrycode=BR&limit=80`,
-        { cache: "no-store" },
-      );
-      const j = (await r.json()) as ApiResp;
-      if (!j?.ok || !Array.isArray(j.stations) || j.stations.length === 0) {
-        throw new Error("Sem estações retornadas.");
+      const savedProfile = localStorage.getItem(LS_KEYS.profile) as RadioProfileId | null;
+      if (savedProfile === "agency" || savedProfile === "focus" || savedProfile === "chill") {
+        setProfile(savedProfile);
       }
 
-      const nextStations = j.stations;
-      const preferredIndex = lastStationId
-        ? nextStations.findIndex((s) => s.stationuuid === lastStationId)
-        : -1;
+      const savedVol = Number(localStorage.getItem(LS_KEYS.volume));
+      const vol = Number.isFinite(savedVol) ? clamp(savedVol, 0, 1) : DEFAULT_VOLUME;
 
-      setStations(nextStations);
-      setIdx(preferredIndex >= 0 ? preferredIndex : 0);
-      setStatus((current) => (enabled ? current : "idle"));
+      // prepara audio
+      const a = audioRef.current;
+      if (a) {
+        a.crossOrigin = "anonymous";
+        a.preload = "none";
+        a.volume = vol;
+      }
+
+      setFavMap(safeJsonParse<Record<string, true>>(localStorage.getItem(LS_KEYS.favorites), {}));
     } catch {
+      // ignore
+    }
+  }, []);
+
+  // anti burn-in sutil
+  useEffect(() => {
+    const t = setInterval(() => {
+      const dx = Math.floor((Math.random() - 0.5) * 10); // -5..5
+      const dy = Math.floor((Math.random() - 0.5) * 10);
+      setUiNudge({ x: dx, y: dy });
+    }, 6 * 60 * 1000); // a cada 6 min
+    return () => clearInterval(t);
+  }, []);
+
+  // --- Load stations
+  async function loadStations(p: RadioProfileId, reason: string) {
+    const now = Date.now();
+    // evita spam
+    if (now - lastActionRef.current < 800 && reason !== "profile-change") return;
+    lastActionRef.current = now;
+
+    setStatus("loading");
+    setMsg("");
+
+    try {
+      const res = await fetch(`/api/radio?profile=${encodeURIComponent(p)}&limit=80`, {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as ApiResp;
+
+      if (!data?.ok) throw new Error(data?.error || "Falha ao carregar rádios");
+      const list = (data?.stations || []).filter((s) => s?.streamUrl);
+
+      if (!list.length) throw new Error("Sem rádios disponíveis nesse perfil");
+
+      // favoritos primeiro, depois shuffle leve pra não repetir sempre igual
+      const favs = safeJsonParse<Record<string, true>>(
+        localStorage.getItem(LS_KEYS.favorites),
+        {}
+      );
+
+      const favList = list.filter((s) => !!favs[s.id]);
+      const rest = list.filter((s) => !favs[s.id]);
+
+      const mixed = [...favList, ...shuffle(rest)];
+
+      // tenta manter última estação
+      let initialIdx = 0;
+      try {
+        const lastId = localStorage.getItem(LS_KEYS.lastStationId);
+        if (lastId) {
+          const found = mixed.findIndex((s) => s.id === lastId);
+          if (found >= 0) initialIdx = found;
+        }
+      } catch {
+        // ignore
+      }
+
+      setStations(mixed);
+      setIdx(initialIdx);
+      setStatus("ready");
+      failsRef.current = 0;
+
+      // prepara source (sem dar play se não estiver armado)
+      const a = audioRef.current;
+      if (a && mixed[initialIdx]?.streamUrl) {
+        a.crossOrigin = "anonymous";
+        a.src = mixed[initialIdx].streamUrl;
+        a.load();
+      }
+    } catch (e: any) {
       setStations([]);
-      setIdx(0);
       setStatus("error");
-    } finally {
-      setLoadingStations(false);
+      setMsg(e?.message ? String(e.message) : "Erro ao carregar rádios");
     }
   }
 
-  function nextStation() {
+  // profile change
+  useEffect(() => {
+    try {
+      localStorage.setItem(LS_KEYS.profile, profile);
+    } catch {
+      // ignore
+    }
+    void loadStations(profile, "profile-change");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile]);
+
+  // --- Helpers persist
+  function persistVolume(v: number) {
+    try {
+      localStorage.setItem(LS_KEYS.volume, String(v));
+    } catch {
+      // ignore
+    }
+  }
+
+  function persistLastStation(id: string) {
+    try {
+      localStorage.setItem(LS_KEYS.lastStationId, id);
+    } catch {
+      // ignore
+    }
+  }
+
+  function persistFavorites(next: Record<string, true>) {
+    try {
+      localStorage.setItem(LS_KEYS.favorites, JSON.stringify(next));
+    } catch {
+      // ignore
+    }
+  }
+
+  function toggleFav(id: string) {
+    setFavMap((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      persistFavorites(next);
+      return next;
+    });
+  }
+
+  // --- Playback
+  async function playCurrent(userAction = false) {
+    const a = audioRef.current;
+    if (!a || !current?.streamUrl) return;
+
+    setMsg("");
+    if (userAction) setArmed(true);
+
+    // evita loop
+    if (switchingRef.current) return;
+
+    switchingRef.current = true;
+    setStatus("buffering");
+
+    try {
+      a.crossOrigin = "anonymous";
+      a.src = current.streamUrl;
+      a.load();
+
+      const p = a.play();
+      if (p) await p;
+
+      setStatus("playing");
+      persistLastStation(current.id);
+      failsRef.current = 0;
+    } catch {
+      // autoplay bloqueado ou stream ruim
+      if (!armed && !userAction) {
+        setStatus("blocked");
+        setMsg("Clique em TOCAR 1x para liberar o áudio (modo TV/kiosk costuma bloquear autoplay).");
+      } else {
+        setStatus("blocked");
+        setMsg("Áudio bloqueado/indisponível. Tenta outra estação ou clique em TOCAR de novo.");
+      }
+    } finally {
+      switchingRef.current = false;
+    }
+  }
+
+  function pause() {
+    const a = audioRef.current;
+    if (!a) return;
+    a.pause();
+    setStatus("paused");
+  }
+
+  function nextStation(auto = false) {
     if (!stations.length) return;
-    setIdx((v) =>
-      shuffle ? pickRandomIndex(v, stations.length) : (v + 1) % stations.length,
-    );
+    setIdx((v) => (v + 1) % stations.length);
+    if (armed && (status === "playing" || status === "buffering" || auto)) {
+      // o useEffect de idx vai tocar
+    }
   }
 
   function prevStation() {
@@ -130,207 +297,144 @@ export default function MusicDock() {
     setIdx((v) => (v - 1 + stations.length) % stations.length);
   }
 
-  function scheduleStationAdvance() {
-    const failures = failureCountRef.current;
-    const backoffMs = Math.min(1200 * 2 ** Math.max(0, failures - 1), 7000);
-    clearRetryTimer();
-    retryTimerRef.current = setTimeout(() => {
-      nextStation();
-    }, backoffMs);
-  }
+  async function recover() {
+    failsRef.current += 1;
 
-  async function recoverFromFailure() {
-    if (!enabled) return;
-
-    const now = Date.now();
-    if (now - lastRecoveryRef.current < 900) {
-      return;
-    }
-    lastRecoveryRef.current = now;
-
-    setStatus("error");
-    failureCountRef.current += 1;
-
-    if (failureCountRef.current >= MAX_CONSECUTIVE_FAILURES) {
-      failureCountRef.current = 0;
-      await loadStations(profile);
+    if (failsRef.current >= MAX_FAILS_BEFORE_REFETCH) {
+      failsRef.current = 0;
+      await loadStations(profile, "refetch-after-fails");
+      // tenta tocar de novo (se armado)
+      if (armed) {
+        setTimeout(() => void playCurrent(false), 300);
+      }
       return;
     }
 
-    scheduleStationAdvance();
+    // tenta próxima estação
+    setTimeout(() => {
+      nextStation(true);
+    }, 250);
   }
 
-  async function playCurrent() {
-    const audio = audioRef.current;
-    if (!audio || !station) return;
-
-    clearRetryTimer();
-
-    try {
-      setStatus("buffering");
-      audio.src = station.url_resolved;
-      audio.load();
-      audio.volume = volume;
-
-      const p = audio.play();
-      if (p) await p;
-    } catch {
-      setStatus("blocked");
-    }
-  }
-
-  function pause() {
-    const audio = audioRef.current;
-    if (!audio) return;
-    clearRetryTimer();
-    audio.pause();
-    setStatus("paused");
-  }
-
+  // quando idx muda, prepara/toca dependendo do estado
   useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(PREFS_KEY);
-      if (!raw) return;
+    const a = audioRef.current;
+    if (!a || !current?.streamUrl) return;
 
-      const parsed = JSON.parse(raw) as Partial<MusicDockPrefs>;
-      if (typeof parsed.volume === "number") {
-        setVolume(clamp(parsed.volume, 0, 1));
-      }
-      if (typeof parsed.shuffle === "boolean") {
-        setShuffle(parsed.shuffle);
-      }
-      if (
-        parsed.profile === "agency" ||
-        parsed.profile === "focus" ||
-        parsed.profile === "chill"
-      ) {
-        setProfile(parsed.profile);
-      }
-      if (typeof parsed.lastStationId === "string" && parsed.lastStationId) {
-        setLastStationId(parsed.lastStationId);
-      }
-    } catch {
-      // ignore invalid localStorage payload
+    a.crossOrigin = "anonymous";
+    a.src = current.streamUrl;
+    a.load();
+
+    if (armed && (status === "playing" || status === "buffering")) {
+      void playCurrent(false);
     }
-  }, []);
 
-  useEffect(() => {
-    loadStations(profile);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [profile]);
+  }, [idx, current?.streamUrl]);
 
+  // eventos do audio: robustez
   useEffect(() => {
-    try {
-      const prefs: MusicDockPrefs = {
-        volume,
-        shuffle,
-        profile,
-        lastStationId,
-      };
-      window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
-    } catch {
-      // ignore localStorage failures
-    }
-  }, [shuffle, volume, profile, lastStationId]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
-    audio.volume = volume;
-  }, [volume]);
-
-  useEffect(() => {
-    if (!station?.stationuuid) return;
-    setLastStationId(station.stationuuid);
-  }, [station?.stationuuid]);
-
-  useEffect(() => {
-    if (!enabled || !station) return;
-    playCurrent();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idx, enabled]);
-
-  useEffect(() => {
-    const audio = audioRef.current;
-    if (!audio) return;
+    const a = audioRef.current;
+    if (!a) return;
 
     const onPlaying = () => {
-      failureCountRef.current = 0;
       setStatus("playing");
-    };
-    const onWaiting = () => {
-      if (!enabled) return;
-      setStatus("buffering");
-    };
-    const onStalled = () => {
-      void recoverFromFailure();
-    };
-    const onEnded = () => {
-      if (!enabled) return;
-      nextStation();
-    };
-    const onError = () => {
-      void recoverFromFailure();
+      setMsg("");
+      failsRef.current = 0;
     };
 
-    audio.addEventListener("playing", onPlaying);
-    audio.addEventListener("waiting", onWaiting);
-    audio.addEventListener("stalled", onStalled);
-    audio.addEventListener("ended", onEnded);
-    audio.addEventListener("error", onError);
+    const onWaiting = () => {
+      if (armed) setStatus("buffering");
+    };
+
+    const onError = () => {
+      if (armed) {
+        setStatus("error");
+        setMsg("Stream falhou. Trocando automaticamente…");
+        void recover();
+      }
+    };
+
+    const onStalled = () => {
+      if (armed) {
+        setStatus("error");
+        setMsg("Conexão instável. Recuperando…");
+        void recover();
+      }
+    };
+
+    const onEnded = () => {
+      if (armed) nextStation(true);
+    };
+
+    a.addEventListener("playing", onPlaying);
+    a.addEventListener("waiting", onWaiting);
+    a.addEventListener("error", onError);
+    a.addEventListener("stalled", onStalled);
+    a.addEventListener("ended", onEnded);
 
     return () => {
-      audio.removeEventListener("playing", onPlaying);
-      audio.removeEventListener("waiting", onWaiting);
-      audio.removeEventListener("stalled", onStalled);
-      audio.removeEventListener("ended", onEnded);
-      audio.removeEventListener("error", onError);
+      a.removeEventListener("playing", onPlaying);
+      a.removeEventListener("waiting", onWaiting);
+      a.removeEventListener("error", onError);
+      a.removeEventListener("stalled", onStalled);
+      a.removeEventListener("ended", onEnded);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled, stations.length, profile]);
+  }, [armed, profile, stations.length, idx]);
 
-  useEffect(() => {
-    return () => {
-      clearRetryTimer();
-    };
-  }, []);
+  // volume atual
+  const volume = useMemo(() => {
+    const a = audioRef.current;
+    return a?.volume ?? DEFAULT_VOLUME;
+  }, [status]);
 
-  const stateChip =
+  const statusChip =
     status === "playing"
       ? "LIVE"
       : status === "buffering"
-        ? "BUFFERING"
-        : status === "blocked"
-          ? "TAP TO PLAY"
-          : status === "paused"
-            ? "PAUSED"
-            : status === "error"
-              ? "RECOVERING"
-              : "READY";
+      ? "BUFFERING"
+      : status === "blocked"
+      ? "TAP TO PLAY"
+      : status === "paused"
+      ? "PAUSED"
+      : status === "loading"
+      ? "LOADING"
+      : status === "error"
+      ? "RECOVER"
+      : "READY";
 
-  const profileCfg = PROFILE_CONFIG[profile];
-  const panelClass =
-    "w-[min(96vw,1100px)] rounded-[28px] border border-white/20 bg-gradient-to-br from-white/16 via-white/8 to-white/4 backdrop-blur-2xl shadow-[0_24px_90px_rgba(0,0,0,0.45)]";
-  const buttonClass =
-    "h-12 min-w-12 rounded-2xl border border-white/20 bg-white/10 px-4 text-sm font-semibold text-white hover:bg-white/20 transition";
+  const profileLabel = profile === "agency" ? "Agência" : profile === "focus" ? "Focus" : "Chill";
+  const subtitle =
+    profile === "agency"
+      ? "Energia de recepção • mood agência"
+      : profile === "focus"
+      ? "Trampo • sem estresse"
+      : "Lounge • chill reception";
 
   return (
-    <div className="fixed bottom-5 left-1/2 z-50 -translate-x-1/2">
-      <audio ref={audioRef} preload="none" />
+    <div
+      className="fixed bottom-6 right-6 z-50 max-w-[94vw]"
+      style={{ transform: `translate(${uiNudge.x}px, ${uiNudge.y}px)` }}
+    >
+      <audio ref={audioRef} />
 
-      <div className={`${panelClass} px-6 py-5 text-white`}>
-        <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="relative overflow-hidden rounded-[28px] border border-white/15 bg-gradient-to-br from-white/12 via-white/8 to-white/5 backdrop-blur-2xl shadow-[0_24px_90px_rgba(0,0,0,0.55)]">
+        {/* glow */}
+        <div className="pointer-events-none absolute -right-24 -top-24 h-64 w-64 rounded-full bg-white/10 blur-3xl" />
+        <div className="pointer-events-none absolute -left-24 -bottom-24 h-64 w-64 rounded-full bg-white/8 blur-3xl" />
+
+        <div className="p-5 text-white">
           <div className="flex items-center gap-4">
-            <div className="grid h-14 w-14 place-items-center overflow-hidden rounded-2xl border border-white/20 bg-white/10">
-              {station?.favicon ? (
+            <div className="grid h-14 w-14 place-items-center overflow-hidden rounded-2xl border border-white/15 bg-white/10">
+              {current?.favicon ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
-                  src={station.favicon}
+                  src={current.favicon}
                   alt=""
                   className="h-full w-full object-cover"
                   onError={(e) => {
-                    (e.currentTarget as HTMLImageElement).style.display =
-                      "none";
+                    (e.currentTarget as HTMLImageElement).style.display = "none";
                   }}
                 />
               ) : (
@@ -338,134 +442,168 @@ export default function MusicDock() {
               )}
             </div>
 
-            <div className="min-w-[260px] max-w-[580px]">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-[0.18em] text-white/70">
-                <span className="rounded-full border border-white/25 bg-white/10 px-2 py-1">
-                  {stateChip}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-xs uppercase tracking-[0.18em] text-white/70">
+                <span className="rounded-full border border-white/20 bg-white/10 px-2 py-1">
+                  {statusChip}
                 </span>
-                <span>{profileCfg.label}</span>
+                <span>{profileLabel}</span>
                 <span className="text-white/40">•</span>
-                <span>{profileCfg.subtitle}</span>
+                <span className="normal-case tracking-normal text-white/60">{subtitle}</span>
               </div>
-              <div className="mt-1 truncate text-xl font-semibold leading-tight">
-                {loadingStations
-                  ? "Carregando rádios..."
-                  : station?.name || "Sem estação"}
+
+              <div className="mt-1 flex items-center gap-2">
+                <div className="truncate text-lg font-semibold leading-tight">
+                  {status === "loading" ? "Carregando rádios…" : current?.name || "Sem estação"}
+                </div>
+                {current?.id ? (
+                  <button
+                    onClick={() => toggleFav(current.id)}
+                    className="ml-auto rounded-xl border border-white/15 bg-white/10 px-3 py-1 text-xs hover:bg-white/15 transition"
+                    title="Favoritar"
+                  >
+                    {favMap[current.id] ? "★ Fav" : "☆ Fav"}
+                  </button>
+                ) : null}
               </div>
-              <div className="text-xs text-white/60">
-                {enabled
-                  ? "Recepção ao vivo"
-                  : "Toque em Ativar para liberar áudio no navegador"}
+
+              <div className="mt-1 text-xs text-white/60 truncate">
+                {msg ? msg : current ? `${current.country ?? ""} ${current.codec ? `• ${current.codec}` : ""} ${
+                  typeof current.bitrate === "number" ? `• ${current.bitrate}kbps` : ""
+                } ${stations.length ? `• ${clamp(idx, 0, stations.length - 1) + 1}/${stations.length}` : ""}` : ""}
               </div>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <button
-              className={buttonClass}
-              onClick={prevStation}
-              title="Anterior"
-            >
-              ◀
-            </button>
+          <div className="mt-4 flex flex-wrap items-center gap-3">
+            {/* presets */}
+            <div className="flex items-center gap-2 rounded-2xl border border-white/15 bg-white/10 p-1">
+              {(["agency", "focus", "chill"] as RadioProfileId[]).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setProfile(p)}
+                  className={`h-10 rounded-2xl px-4 text-sm font-semibold transition ${
+                    profile === p ? "bg-white text-black" : "text-white/80 hover:bg-white/10"
+                  }`}
+                  title="Preset"
+                >
+                  {p === "agency" ? "Agência" : p === "focus" ? "Focus" : "Chill"}
+                </button>
+              ))}
+            </div>
 
-            {!enabled || status === "paused" || status === "blocked" ? (
+            {/* controls */}
+            <div className="ml-auto flex items-center gap-2">
               <button
-                className={`${buttonClass} h-14 min-w-[170px] bg-white/20 text-base`}
-                onClick={async () => {
-                  setEnabled(true);
-                  await playCurrent();
+                onClick={prevStation}
+                className="h-11 w-11 rounded-2xl border border-white/15 bg-white/10 text-sm hover:bg-white/15 transition"
+                title="Anterior"
+              >
+                ◀
+              </button>
+
+              <button
+                onClick={() => {
+                  if (status === "playing") pause();
+                  else void playCurrent(true);
                 }}
-                title="Ativar"
+                className="h-11 min-w-[150px] rounded-2xl bg-white px-5 text-sm font-semibold text-black hover:opacity-90 transition"
+                title="Tocar / Pausar"
               >
-                ▶ Ativar
+                {status === "playing" ? "Pausar" : "Tocar"}
               </button>
-            ) : (
+
               <button
-                className={`${buttonClass} h-14 min-w-[170px] text-base`}
-                onClick={pause}
-                title="Pausar"
+                onClick={() => nextStation(true)}
+                className="h-11 w-11 rounded-2xl border border-white/15 bg-white/10 text-sm hover:bg-white/15 transition"
+                title="Próxima"
               >
-                ❚❚ Pausar
+                ▶
               </button>
-            )}
 
-            <button
-              className={buttonClass}
-              onClick={nextStation}
-              title="Próxima"
-            >
-              ▶
-            </button>
+              <button
+                onClick={() => setPanelOpen((v) => !v)}
+                className="h-11 rounded-2xl border border-white/15 bg-white/10 px-4 text-sm hover:bg-white/15 transition"
+                title="Lista"
+              >
+                Lista
+              </button>
+            </div>
           </div>
-        </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto_auto_auto_auto] md:items-center">
-          <select
-            aria-label="Perfil"
-            className="h-12 rounded-2xl border border-white/20 bg-white/10 px-4 text-sm"
-            value={profile}
-            onChange={(e) => setProfile(e.target.value as ProfileKey)}
-          >
-            <option value="agency">Agency</option>
-            <option value="focus">Focus</option>
-            <option value="chill">Chill</option>
-          </select>
-
-          <select
-            aria-label="Estação"
-            className="h-12 rounded-2xl border border-white/20 bg-white/10 px-4 text-sm"
-            value={station?.stationuuid || ""}
-            onChange={(e) => {
-              const next = stations.findIndex(
-                (s) => s.stationuuid === e.target.value,
-              );
-              if (next >= 0) setIdx(next);
-            }}
-          >
-            {stations.map((s) => (
-              <option key={s.stationuuid} value={s.stationuuid}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-
-          <button
-            className={`${buttonClass} ${shuffle ? "bg-white/25" : ""}`}
-            onClick={() => setShuffle((v) => !v)}
-            title="Modo aleatório"
-          >
-            🔀 {shuffle ? "Shuffle" : "Sequência"}
-          </button>
-
-          <div className="flex h-12 items-center gap-3 rounded-2xl border border-white/20 bg-white/10 px-4">
-            <span className="text-xs uppercase tracking-wide text-white/70">
-              Vol
-            </span>
+          {/* volume */}
+          <div className="mt-4 flex items-center gap-3 rounded-2xl border border-white/15 bg-white/10 px-4 py-3">
+            <div className="text-xs uppercase tracking-widest text-white/70 w-20">Volume</div>
             <input
               aria-label="Volume"
               type="range"
               min={0}
               max={100}
               value={Math.round(volume * 100)}
-              onChange={(e) =>
-                setVolume(clamp(Number(e.target.value) / 100, 0, 1))
-              }
+              onChange={(e) => {
+                const a = audioRef.current;
+                if (!a) return;
+                const v = clamp(Number(e.target.value) / 100, 0, 1);
+                a.volume = v;
+                persistVolume(v);
+              }}
+              className="w-full"
             />
-            <span className="text-xs text-white/70">
-              {Math.round(volume * 100)}%
-            </span>
+            <div className="text-xs text-white/70 w-12 text-right">{Math.round(volume * 100)}%</div>
           </div>
 
-          <button
-            className={buttonClass}
-            onClick={() => {
-              void loadStations(profile);
-            }}
-            title="Recarregar"
-          >
-            ↻ Recarregar
-          </button>
+          {/* station panel */}
+          {panelOpen ? (
+            <div className="mt-4 max-h-[320px] overflow-auto rounded-2xl border border-white/15 bg-black/35 p-3">
+              <div className="mb-2 text-xs uppercase tracking-widest text-white/60">
+                Estações ({stations.length})
+              </div>
+
+              <div className="grid gap-2">
+                {stations.slice(0, 40).map((s, i) => {
+                  const active = i === idx;
+                  return (
+                    <button
+                      key={s.id}
+                      onClick={() => setIdx(i)}
+                      className={`flex items-center gap-3 rounded-2xl border px-3 py-2 text-left transition ${
+                        active
+                          ? "border-white/30 bg-white/15"
+                          : "border-white/10 bg-white/5 hover:bg-white/10"
+                      }`}
+                    >
+                      <div className="w-6 text-xs text-white/60">{String(i + 1).padStart(2, "0")}</div>
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-sm font-semibold">{s.name}</div>
+                        <div className="truncate text-xs text-white/60">
+                          {s.country ?? ""} {s.codec ? `• ${s.codec}` : ""}{" "}
+                          {typeof s.bitrate === "number" ? `• ${s.bitrate}kbps` : ""}
+                        </div>
+                      </div>
+                      <div className="text-xs text-white/60">
+                        {favMap[s.id] ? "★" : ""}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between">
+                <button
+                  onClick={() => void loadStations(profile, "manual-reload")}
+                  className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15 transition"
+                >
+                  ↻ Recarregar
+                </button>
+                <button
+                  onClick={() => setPanelOpen(false)}
+                  className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm hover:bg-white/15 transition"
+                >
+                  Fechar
+                </button>
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
