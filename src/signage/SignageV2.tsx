@@ -232,8 +232,15 @@ export default function SignageV2() {
           {/* TOP BAR */}
           <div className="flex items-start justify-between">
             <div className="flex items-center gap-4">
-              <Logo src={SIGNAGE_CONFIG.groupLogoSrc} label="T.Group" />
-
+              <Logo
+  src={
+    (SIGNAGE_CONFIG as any).logos?.tgroup ??
+    (SIGNAGE_CONFIG as any).groupLogoSrc ??
+    (SIGNAGE_CONFIG as any).groupLogo ??
+    undefined
+  }
+  label="T.Group"
+/>
               <div className="hidden md:flex items-center gap-2">
                 {SIGNAGE_CONFIG.brandTabs.map((b) => (
                   <span
