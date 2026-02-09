@@ -1,38 +1,51 @@
 "use client";
 
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { SIGNAGE_CONFIG } from "@/config";
 import MusicDock from "@/components/MusicDock";
-import { Montserrat } from "next/font/google";
 
-const montserrat = Montserrat({
-  subsets: ["latin"],
-  weight: ["400", "600", "700", "800", "900"],
-  display: "swap",
-});
-
-type SceneId = "welcome" | "arrivals" | "birthdays" | "weather" | "news";
+type SceneId = "welcome" | "birthdays" | "weather" | "news" | `arrivals:${number}`;
 
 type WeatherHourly = {
-  timeLabel: string;
+  timeLabel: string; // "13:00"
   tempC?: number;
   emoji?: string;
   description?: string;
+  precipProbPct?: number;
+  precipMm?: number;
 };
 
 type WeatherDaily = {
-  dayLabel: string;
+  dayLabel: string; // "seg"
   minC?: number;
   maxC?: number;
   emoji?: string;
   description?: string;
+  precipProbPct?: number;
+  sunrise?: string; // "06:02"
+  sunset?: string; // "18:41"
+  uvMax?: number;
 };
 
 type WeatherPayload = {
   ok: boolean;
   tempC?: number;
+  feelsLikeC?: number;
+  humidityPct?: number;
+  windKph?: number;
+  windDirDeg?: number;
+  precipMmNow?: number;
+  precipProbNowPct?: number;
+  cloudPct?: number;
+
   emoji?: string;
   description?: string;
+
+  sunrise?: string; // hoje
+  sunset?: string;  // hoje
+  uvMaxToday?: number;
+
   hourly?: WeatherHourly[];
   daily?: WeatherDaily[];
 };
@@ -45,7 +58,7 @@ type NewsItem = {
 };
 
 type BirthdayItem = {
-  mmdd?: string;
+  mmdd?: string; // "0203"
   day?: number;
   month?: number;
   name?: string;
@@ -118,16 +131,9 @@ function domainFromUrl(url?: string) {
   }
 }
 
-function useTvModeFromWindow() {
-  const [tv, setTv] = useState(false);
-  useEffect(() => {
-    try {
-      const sp = new URLSearchParams(window.location.search);
-      setTv(sp.get("tv") === "1");
-    } catch {
-      setTv(false);
-    }
-  }, []);
+function useTvMode() {
+  const params = useSearchParams();
+  const tv = params?.get("tv") === "1";
   return tv;
 }
 
@@ -140,28 +146,31 @@ function useClock(tickMs = 1000) {
   return now;
 }
 
+function chunk<T>(arr: T[], size: number) {
+  const out: T[][] = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
 export default function SignageV2() {
   const cfg = SIGNAGE_CONFIG as any;
 
-  const tv = useTvModeFromWindow();
+  const tv = useTvMode();
   const now = useClock(1000);
 
-  const scenes: SceneId[] = useMemo(
-    () => ["welcome", "arrivals", "birthdays", "weather", "news"],
-    []
-  );
-
+  // tempo de cada tela (padrão 11s)
   const sceneDurationMs = useMemo(() => {
     const fromCfg = safeNumber(cfg?.sceneDurationMs, 11000);
     return clamp(fromCfg, 8000, 20000);
   }, [cfg?.sceneDurationMs]);
 
+  // refreshers
   const refreshWeatherMs = useMemo(
     () => clamp(safeNumber(cfg?.refreshWeatherMs, 10 * 60_000), 60_000, 60 * 60_000),
     [cfg?.refreshWeatherMs]
   );
   const refreshNewsMs = useMemo(
-    () => clamp(safeNumber(cfg?.refreshNewsMs, 12 * 60_000), 60_000, 60 * 60_000),
+    () => clamp(safeNumber(cfg?.refreshNewsMs, 5 * 60_000), 60_000, 60 * 60_000),
     [cfg?.refreshNewsMs]
   );
   const refreshBirthdaysMs = useMemo(
@@ -169,16 +178,28 @@ export default function SignageV2() {
     [cfg?.refreshBirthdaysMs]
   );
 
-  const [sceneIndex, setSceneIndex] = useState(0);
-  const activeScene = scenes[sceneIndex] ?? "welcome";
-
+  // Data
   const [weather, setWeather] = useState<WeatherPayload | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [birthdays, setBirthdays] = useState<BirthdayItem[]>([]);
-  const [arrivals, setArrivals] = useState<Array<{ src: string; label?: string }>>(
+  const [arrivals] = useState<Array<{ src: string; label?: string }>>(
     () => cfg?.welcomePosters ?? cfg?.arrivalsPosters ?? []
   );
 
+  // Arrivals pages: 3 por tela
+  const arrivalsPages = useMemo(() => chunk(arrivals ?? [], 3), [arrivals]);
+
+  // Scenes: inclui arrivals:N automaticamente
+  const scenes: SceneId[] = useMemo(() => {
+    const arrScenes: SceneId[] =
+      arrivalsPages.length > 0 ? arrivalsPages.map((_, i) => `arrivals:${i}` as const) : [];
+    return ["welcome", ...arrScenes, "birthdays", "weather", "news"];
+  }, [arrivalsPages.length]);
+
+  const [sceneIndex, setSceneIndex] = useState(0);
+  const activeScene = scenes[sceneIndex] ?? "welcome";
+
+  // Rotação de telas
   useEffect(() => {
     const id = setInterval(() => {
       setSceneIndex((i) => (i + 1) % scenes.length);
@@ -210,14 +231,13 @@ export default function SignageV2() {
     };
   }, [refreshWeatherMs]);
 
-  // Fetch News (agora vem do NewsAPI via /api/news, com image real quando existir)
+  // Fetch News
   useEffect(() => {
     let alive = true;
 
     function normalizeNewsPayload(payload: any): NewsItem[] {
       const items = payload?.items ?? payload?.news ?? payload?.data ?? payload ?? [];
       if (!Array.isArray(items)) return [];
-
       return items
         .map((it: any) => {
           if (typeof it === "string") return { title: it } as NewsItem;
@@ -227,7 +247,7 @@ export default function SignageV2() {
             title,
             source: it?.source ?? it?.provider ?? it?.site ?? it?.origin,
             url: it?.url ?? it?.link ?? it?.href,
-            image: it?.image ?? it?.urlToImage ?? it?.thumbnail ?? it?.thumb,
+            image: it?.image ?? it?.thumbnail ?? it?.thumb,
           } as NewsItem;
         })
         .filter(Boolean) as NewsItem[];
@@ -238,8 +258,7 @@ export default function SignageV2() {
         const res = await fetch("/api/news", { cache: "no-store" });
         const json = await res.json();
         if (!alive) return;
-        const normalized = normalizeNewsPayload(json);
-        setNews(normalized);
+        setNews(normalizeNewsPayload(json));
       } catch {
         if (!alive) return;
         setNews([]);
@@ -291,12 +310,14 @@ export default function SignageV2() {
     };
   }, [refreshBirthdaysMs]);
 
+  // Ticker
   const tickerItems = useMemo(() => {
     const base = news.slice(0, 12).map((n) => n.title).filter(Boolean);
     if (base.length === 0) return ["T.Group • Recepção • Bem-vindas, vindes e vindos"];
     return base;
   }, [news]);
 
+  // Header data
   const timeHHMM = useMemo(
     () => now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
     [now]
@@ -339,21 +360,6 @@ export default function SignageV2() {
     return [a, b].filter(Boolean);
   }, [birthdaysThisMonth, birthdayCarouselIndex]);
 
-  const [arrivalsIndex, setArrivalsIndex] = useState(0);
-  useEffect(() => {
-    if (!arrivals || arrivals.length <= 2) return;
-    const id = setInterval(() => setArrivalsIndex((i) => i + 1), 8500);
-    return () => clearInterval(id);
-  }, [arrivals]);
-
-  const arrivalsShowcase = useMemo(() => {
-    if (!arrivals || arrivals.length === 0) return [];
-    if (arrivals.length <= 2) return arrivals;
-    const a = arrivals[arrivalsIndex % arrivals.length];
-    const b = arrivals[(arrivalsIndex + 1) % arrivals.length];
-    return [a, b].filter(Boolean);
-  }, [arrivals, arrivalsIndex]);
-
   // About texts
   const about = useMemo(() => {
     const mission =
@@ -373,39 +379,82 @@ export default function SignageV2() {
     return { mission, vision, values };
   }, [cfg?.mission, cfg?.vision, cfg?.values]);
 
-  // Logos (arquivos em /public/signage/logos)
-  const brandLogoSrc = useMemo(() => cfg?.brandLogoSrc ?? "/signage/logos/tgroup-logo.png", [cfg?.brandLogoSrc]);
-
   const tabs = useMemo(() => {
-    // você pode controlar por config depois se quiser, mas aqui vai direto no padrão
-    return [
-      { key: "BRANDS", src: "/signage/logos/tbrands.png", alt: "T.Brands" },
-      { key: "VENUES", src: "/signage/logos/tvenues.png", alt: "T.Venues" },
-      { key: "DREAMS", src: "/signage/logos/tdreams.png", alt: "T.Dreams" },
-      { key: "YOUTH", src: "/signage/logos/tyouth.png", alt: "T.Youth" },
-    ];
-  }, []);
+    const raw = cfg?.brandTabs;
+    if (Array.isArray(raw) && raw.length) {
+      return raw.map((t: any) => (typeof t === "string" ? t : t?.label ?? t?.name ?? "")).filter(Boolean);
+    }
+    return ["BRANDS", "VENUES", "DREAMS", "YOUTH"];
+  }, [cfg?.brandTabs]);
+
+  // Arrivals page index
+  const arrivalsPageIndex = useMemo(() => {
+    if (activeScene.startsWith("arrivals:")) {
+      const n = Number(activeScene.split(":")[1]);
+      return Number.isFinite(n) ? n : 0;
+    }
+    return 0;
+  }, [activeScene]);
+
+  const arrivalsChunk = useMemo(() => arrivalsPages[arrivalsPageIndex] ?? [], [arrivalsPages, arrivalsPageIndex]);
+
+  // Weather helpers
+  const windLabel = useMemo(() => {
+    const w = weather?.windKph;
+    if (!Number.isFinite(Number(w))) return "—";
+    return `${Math.round(Number(w))} km/h`;
+  }, [weather?.windKph]);
+
+  const humidityLabel = useMemo(() => {
+    const h = weather?.humidityPct;
+    if (!Number.isFinite(Number(h))) return "—";
+    return `${Math.round(Number(h))}%`;
+  }, [weather?.humidityPct]);
+
+  const feelsLabel = useMemo(() => {
+    const f = weather?.feelsLikeC;
+    if (!Number.isFinite(Number(f))) return "—";
+    return `${Math.round(Number(f))}°C`;
+  }, [weather?.feelsLikeC]);
+
+  const popLabel = useMemo(() => {
+    const p = weather?.precipProbNowPct;
+    if (!Number.isFinite(Number(p))) return "—";
+    return `${Math.round(Number(p))}%`;
+  }, [weather?.precipProbNowPct]);
+
+  const sunriseSunset = useMemo(() => {
+    const s1 = weather?.sunrise ?? "—";
+    const s2 = weather?.sunset ?? "—";
+    return { sunrise: s1, sunset: s2 };
+  }, [weather?.sunrise, weather?.sunset]);
+
+  const uvLabel = useMemo(() => {
+    const uv = weather?.uvMaxToday;
+    if (!Number.isFinite(Number(uv))) return "—";
+    return `${Math.round(Number(uv))}`;
+  }, [weather?.uvMaxToday]);
 
   return (
-    <div className={`${montserrat.className} tg_root ${tv ? "tv" : ""}`} data-scene={activeScene}>
+    <div className={`tg_root ${tv ? "tv" : ""}`} data-scene={activeScene}>
       {/* Header */}
       <header className="tg_header">
         <div className="tg_brand">
-          <div className="tg_brandLogoWrap" aria-hidden>
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className="tg_brandLogo" src={brandLogoSrc} alt="" />
+          {/* Se você já inseriu logo aqui, mantém seu bloco atual.
+              Este aqui é o fallback padrão caso ainda não tenha. */}
+          <div className="tg_mark" aria-hidden>
+            <span>T.</span>
           </div>
           <div className="tg_brandText">
-            <div className="tg_brandName">TV Signage</div>
-            <div className="tg_brandSub">Sede • Perdizes</div>
+            <div className="tg_brandName">T.Group</div>
+            <div className="tg_brandSub">TV Signage • Sede • Perdizes</div>
           </div>
         </div>
 
         <nav className="tg_tabs" aria-label="Empresas">
-          {tabs.map((t) => (
-            <span key={t.key} className="tg_tab" title={t.alt}>
-              {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img className="tg_tabLogo" src={t.src} alt={t.alt} />
+          {tabs.map((t: string) => (
+            <span key={t} className="tg_tab">
+              {t}
             </span>
           ))}
         </nav>
@@ -431,67 +480,82 @@ export default function SignageV2() {
               ) : null}
             </div>
 
-            <div className="tg_welcomeWide">
-              <div className="tg_welcomePill">ENTRETENIMENTO • LIVE MARKETING • PERFORMANCE • TECNOLOGIA</div>
-
-              <div className="tg_welcomeBlocks">
-                <div className="tg_block mission">
-                  <div className="tg_blockTop">
-                    <span className="tg_blockTag">MISSÃO</span>
-                  </div>
-                  <div className="tg_blockText">{about.mission}</div>
-                  <div className="tg_blockSub">Do briefing ao aplauso — com execução impecável.</div>
-                </div>
-
-                <div className="tg_block vision">
-                  <div className="tg_blockTop">
-                    <span className="tg_blockTag">VISÃO</span>
-                  </div>
-                  <div className="tg_blockText">{about.vision}</div>
-                  <div className="tg_blockSub">Performance real + tecnologia, sem perder o brilho.</div>
-                </div>
-
-                <div className="tg_block values">
-                  <div className="tg_blockTop">
-                    <span className="tg_blockTag">VALORES</span>
-                  </div>
-                  <ul className="tg_values">
-                    {about.values.map((v: string) => (
-                      <li key={v} className="tg_value">
-                        <span className="check" aria-hidden>
-                          ✓
-                        </span>
-                        <span>{v}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  <div className="tg_blockSub">Cultura aqui não é frase bonita — é operação.</div>
-                </div>
+            <div className="tg_welcomeCard">
+              <div className="tg_welcomeArt" aria-hidden>
+                <div className="blob b1" />
+                <div className="blob b2" />
+                <div className="blob b3" />
+                <div className="grid" />
+                <div className="tg_welcomeStamp">Recepção</div>
               </div>
 
-              <div className="tg_welcomeFooter">
-                <span className="tg_mini">Sinta-se em casa. A gente cuida do resto.</span>
+              <div className="tg_about">
+                <div className="tg_aboutHeader">
+                  <span className="tg_pill">SOBRE A GENTE</span>
+                  <span className="tg_aboutHint">entretenimento • live marketing • performance • tecnologia</span>
+                </div>
+
+                {/* 3 blocos separados */}
+                <div className="tg_aboutUnified v2">
+                  <div className="tg_aboutBlock mission">
+                    <div className="tg_aboutLabel">Missão</div>
+                    <div className="tg_aboutText">{about.mission}</div>
+                    <div className="tg_aboutMini">Do briefing ao aplauso — com execução impecável.</div>
+                  </div>
+
+                  <div className="tg_aboutBlock vision">
+                    <div className="tg_aboutLabel">Visão</div>
+                    <div className="tg_aboutText">{about.vision}</div>
+                    <div className="tg_aboutMini">Performance real + tecnologia, sem perder o brilho.</div>
+                  </div>
+
+                  <div className="tg_aboutBlock values">
+                    <div className="tg_aboutLabel">Valores</div>
+                    <ul className="tg_values">
+                      {about.values.map((v: string) => (
+                        <li key={v} className="tg_value">
+                          <span className="check" aria-hidden>
+                            ✓
+                          </span>
+                          <span>{v}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="tg_aboutMini">Cultura aqui não é frase bonita — é operação.</div>
+                  </div>
+                </div>
+
+                <div className="tg_welcomeFooter">
+                  <span className="tg_mini">Sinta-se em casa. A gente cuida do resto.</span>
+                </div>
               </div>
             </div>
           </section>
         )}
 
-        {activeScene === "arrivals" && (
+        {/* ARRIVALS PÁGINAS (3 por tela) */}
+        {activeScene.startsWith("arrivals:") && (
           <section className="tg_scene">
             <div className="tg_sceneHeader">
               <h1 className="tg_title">Chegadas do mês</h1>
-              <div className="tg_sceneTag">fevereiro • nova energia no ar ✨</div>
+              <div className="tg_sceneTag">
+                fevereiro • nova energia no ar ✨
+                {arrivalsPages.length > 1 ? (
+                  <span className="tg_scenePager">{` • ${arrivalsPageIndex + 1}/${arrivalsPages.length}`}</span>
+                ) : null}
+              </div>
             </div>
 
-            <div className="tg_postersRow">
-              {arrivalsShowcase.length === 0 ? (
+            <div className={`tg_postersRow count-${arrivalsChunk.length}`}>
+              {arrivalsChunk.length === 0 ? (
                 <div className="tg_empty">
                   <div className="tg_emptyTitle">Sem artes de chegadas no momento</div>
                   <div className="tg_emptySub">Quando tiver, elas aparecem aqui automaticamente (via config / posters).</div>
                 </div>
               ) : (
-                arrivalsShowcase.slice(0, 2).map((p, idx) => (
+                arrivalsChunk.slice(0, 3).map((p, idx) => (
                   <div key={`${p.src}-${idx}`} className="tg_posterFrame">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
                     <img className="tg_posterImg" src={p.src} alt={p.label ?? "Chegadas do mês"} />
                     {p.label ? <div className="tg_posterLabel">{p.label}</div> : null}
                   </div>
@@ -516,6 +580,7 @@ export default function SignageV2() {
                   <div className="tg_birthdaysCards">
                     {birthdayShowcase.map((b, idx) => (
                       <div key={`${b.imageSrc}-${idx}`} className="tg_bdayFrame">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
                         <img className="tg_bdayImg" src={b.imageSrc} alt={b.imageAlt ?? "Aniversário"} />
                         <div className="tg_bdayOverlay">
                           <div className="tg_bdayName">{b.name ?? "Aniversariante"}</div>
@@ -567,11 +632,15 @@ export default function SignageV2() {
           </section>
         )}
 
+        {/* WEATHER + DETALHES */}
         {activeScene === "weather" && (
           <section className="tg_scene">
-            <h1 className="tg_title">Clima</h1>
+            <div className="tg_sceneHeader">
+              <h1 className="tg_title">Clima</h1>
+              <div className="tg_sceneTag">detalhes do dia • recepção • leitura rápida</div>
+            </div>
 
-            <div className="tg_weatherGrid">
+            <div className="tg_weatherGrid v2">
               <div className="tg_weatherNow">
                 <div className="tg_weatherBig">
                   <div className="tg_weatherEmoji" aria-hidden>
@@ -581,6 +650,51 @@ export default function SignageV2() {
                     <div className="tg_weatherTemp">{tempNowLabel ?? "—"}</div>
                     <div className="tg_weatherDesc">{weather?.description ?? "São Paulo"}</div>
                   </div>
+                </div>
+
+                <div className="tg_weatherStrip">
+                  <div className="tg_metric">
+                    <div className="k">Sensação</div>
+                    <div className="v">{feelsLabel}</div>
+                  </div>
+                  <div className="tg_metric">
+                    <div className="k">Umidade</div>
+                    <div className="v">{humidityLabel}</div>
+                  </div>
+                  <div className="tg_metric">
+                    <div className="k">Vento</div>
+                    <div className="v">{windLabel}</div>
+                  </div>
+                  <div className="tg_metric">
+                    <div className="k">Chuva</div>
+                    <div className="v">{popLabel}</div>
+                  </div>
+                </div>
+              </div>
+
+              <div className="tg_weatherDetails">
+                <div className="tg_panelTitle">Hoje</div>
+                <div className="tg_detailsGrid">
+                  <div className="tg_detailCard">
+                    <div className="h">Nascer do sol</div>
+                    <div className="b">{sunriseSunset.sunrise}</div>
+                  </div>
+                  <div className="tg_detailCard">
+                    <div className="h">Pôr do sol</div>
+                    <div className="b">{sunriseSunset.sunset}</div>
+                  </div>
+                  <div className="tg_detailCard">
+                    <div className="h">UV máx</div>
+                    <div className="b">{uvLabel}</div>
+                  </div>
+                  <div className="tg_detailCard">
+                    <div className="h">Nuvens</div>
+                    <div className="b">{Number.isFinite(Number(weather?.cloudPct)) ? `${Math.round(Number(weather?.cloudPct))}%` : "—"}</div>
+                  </div>
+                </div>
+
+                <div className="tg_detailsHint">
+                  Dica: se chover (↑), já deixa guarda-chuva na recepção e reforça tapete anti-derrapante.
                 </div>
               </div>
 
@@ -599,6 +713,9 @@ export default function SignageV2() {
                           {Number.isFinite(Number(d.minC)) ? `${Math.round(Number(d.minC))}°` : "—"}
                         </span>
                       </div>
+                      <div className="tg_dayMeta">
+                        <span>{Number.isFinite(Number(d.precipProbPct)) ? `Chuva: ${Math.round(Number(d.precipProbPct))}%` : ""}</span>
+                      </div>
                     </div>
                   ))}
                 </div>
@@ -607,7 +724,7 @@ export default function SignageV2() {
               <div className="tg_weatherHourly">
                 <div className="tg_panelTitle">Hoje (próximas horas)</div>
                 <div className="tg_hoursRow">
-                  {(weather?.hourly ?? []).slice(0, 8).map((h, i) => (
+                  {(weather?.hourly ?? []).slice(0, 10).map((h, i) => (
                     <div key={`${h.timeLabel}-${i}`} className="tg_hourCard">
                       <div className="tg_hourLabel">{h.timeLabel}</div>
                       <div className="tg_hourEmoji" aria-hidden>
@@ -615,6 +732,9 @@ export default function SignageV2() {
                       </div>
                       <div className="tg_hourTemp">
                         {Number.isFinite(Number(h.tempC)) ? `${Math.round(Number(h.tempC))}°` : "—"}
+                      </div>
+                      <div className="tg_hourMeta">
+                        {Number.isFinite(Number(h.precipProbPct)) ? `${Math.round(Number(h.precipProbPct))}%` : "—"}
                       </div>
                     </div>
                   ))}
@@ -624,6 +744,7 @@ export default function SignageV2() {
           </section>
         )}
 
+        {/* NEWS */}
         {activeScene === "news" && (
           <section className="tg_scene">
             <div className="tg_sceneHeader">
@@ -631,10 +752,10 @@ export default function SignageV2() {
               <div className="tg_sceneTag">manchetes com imagem • leitura rápida</div>
             </div>
 
-            <div className="tg_newsLayout">
-              <div className="tg_newsHero">
+            <div className="tg_newsGrid">
+              <div className="tg_newsFeatured">
                 {news[0] ? (
-                  <NewsTile item={news[0]} featured />
+                  <NewsCard item={news[0]} featured />
                 ) : (
                   <div className="tg_empty">
                     <div className="tg_emptyTitle">Carregando notícias…</div>
@@ -643,9 +764,9 @@ export default function SignageV2() {
                 )}
               </div>
 
-              <div className="tg_newsMosaic">
+              <div className="tg_newsList">
                 {news.slice(1, 9).map((it, idx) => (
-                  <NewsTile key={`${it.title}-${idx}`} item={it} />
+                  <NewsCard key={`${it.title}-${idx}`} item={it} />
                 ))}
               </div>
             </div>
@@ -696,33 +817,32 @@ export default function SignageV2() {
   );
 }
 
-function NewsTile({ item, featured }: { item: NewsItem; featured?: boolean }) {
+function NewsCard({ item, featured }: { item: NewsItem; featured?: boolean }) {
   const domain = domainFromUrl(item.url);
-  const sourceLabel = item.source ?? domain ?? "notícias";
+  const sourceLabel = (item.source ?? domain ?? "notícias").toString();
+  const mediaSrc = item.image;
 
-  // Quando vier do NewsAPI, isso tende a ser urlToImage (imagem grande). :contentReference[oaicite:5]{index=5}
-  const bg = item.image;
+  const letter = (sourceLabel?.trim()?.[0] ?? "N").toUpperCase();
 
   return (
-    <article className={`tg_newsTile ${featured ? "featured" : ""}`}>
-      <div
-        className="tg_newsTileBg"
-        style={bg ? { backgroundImage: `url(${bg})` } : undefined}
-        aria-hidden
-      />
-      <div className="tg_newsTileShade" aria-hidden />
-
-      <div className="tg_newsTileBody">
-        <div className="tg_newsTileTop">
-          <span className="tg_newsPill">{sourceLabel}</span>
-          {domain ? <span className="tg_newsDomain">{domain}</span> : <span className="tg_newsDomain">—</span>}
-        </div>
-        <div className="tg_newsTileTitle">{item.title}</div>
-        {item.url ? (
-          <div className="tg_newsTileHint">Abrir no navegador: {domain ?? "link"}</div>
+    <article className={`tg_newsCard ${featured ? "featured" : ""}`}>
+      <div className="tg_newsMedia">
+        {mediaSrc ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="tg_newsImg" src={mediaSrc} alt="" />
         ) : (
-          <div className="tg_newsTileHint">Atualizando fontes…</div>
+          <div className="tg_newsMediaFallback" aria-hidden>
+            <span>{letter}</span>
+          </div>
         )}
+      </div>
+
+      <div className="tg_newsBody">
+        <div className="tg_newsTitle">{item.title}</div>
+        <div className="tg_newsMeta">
+          <span className="tg_newsSource">{item.source ?? domain ?? "notícias"}</span>
+          {domain ? <span className="tg_newsDomain">{domain}</span> : null}
+        </div>
       </div>
     </article>
   );
@@ -736,6 +856,7 @@ function GlobalStyles() {
         position: relative;
         overflow: hidden;
         color: #fff;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial;
         background: radial-gradient(1100px 600px at 12% 18%, rgba(60, 80, 255, 0.35), transparent 55%),
           radial-gradient(900px 700px at 85% 15%, rgba(0, 220, 180, 0.26), transparent 60%),
           radial-gradient(1000px 800px at 70% 90%, rgba(255, 30, 140, 0.22), transparent 60%),
@@ -747,6 +868,12 @@ function GlobalStyles() {
         background: radial-gradient(900px 600px at 10% 20%, rgba(255, 60, 120, 0.28), transparent 55%),
           radial-gradient(900px 700px at 80% 20%, rgba(60, 140, 255, 0.24), transparent 60%),
           radial-gradient(1000px 800px at 60% 95%, rgba(0, 220, 180, 0.18), transparent 60%),
+          #05060b;
+      }
+      .tg_root[data-scene="weather"] {
+        background: radial-gradient(1000px 700px at 15% 20%, rgba(0, 220, 180, 0.28), transparent 60%),
+          radial-gradient(900px 650px at 80% 20%, rgba(255, 140, 30, 0.22), transparent 60%),
+          radial-gradient(900px 700px at 55% 95%, rgba(60, 80, 255, 0.20), transparent 60%),
           #05060b;
       }
 
@@ -775,7 +902,7 @@ function GlobalStyles() {
         min-width: 280px;
       }
 
-      .tg_brandLogoWrap {
+      .tg_mark {
         width: 44px;
         height: 44px;
         border-radius: 14px;
@@ -784,23 +911,15 @@ function GlobalStyles() {
         background: rgba(255, 255, 255, 0.07);
         border: 1px solid rgba(255, 255, 255, 0.12);
         box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
-        overflow: hidden;
-      }
-
-      .tg_brandLogo {
-        width: 100%;
-        height: 100%;
-        object-fit: contain;
-        padding: 7px;
-        opacity: 0.95;
+        font-weight: 900;
+        letter-spacing: -0.06em;
       }
 
       .tg_brandName {
         font-weight: 900;
         letter-spacing: -0.03em;
-        font-size: 14px;
+        font-size: 18px;
         line-height: 1.1;
-        opacity: 0.92;
       }
       .tg_brandSub {
         opacity: 0.75;
@@ -816,21 +935,14 @@ function GlobalStyles() {
         border: 1px solid rgba(255, 255, 255, 0.08);
         backdrop-filter: blur(10px);
       }
-
       .tg_tab {
-        width: 86px;
-        height: 34px;
-        display: grid;
-        place-items: center;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        opacity: 0.9;
+        padding: 7px 12px;
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         background: rgba(0, 0, 0, 0.12);
-      }
-      .tg_tabLogo {
-        width: 70px;
-        height: 20px;
-        object-fit: contain;
-        opacity: 0.92;
       }
 
       .tg_clock {
@@ -873,6 +985,10 @@ function GlobalStyles() {
         opacity: 0.85;
         font-size: 14px;
       }
+      .tg_scenePager {
+        opacity: 0.7;
+        font-weight: 800;
+      }
 
       .tg_title {
         font-weight: 950;
@@ -894,97 +1010,167 @@ function GlobalStyles() {
         opacity: 0.6;
       }
 
-      /* Welcome (pegada atual) */
-      .tg_welcomeWide {
+      /* Welcome */
+      .tg_welcomeCard {
+        display: grid;
+        grid-template-columns: 360px 1fr;
+        gap: 18px;
+        align-items: stretch;
         margin-top: 18px;
+      }
+
+      .tg_welcomeArt {
+        position: relative;
         border-radius: 22px;
         border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.16);
-        padding: 18px;
+        background: rgba(255, 255, 255, 0.04);
+        overflow: hidden;
+        min-height: 360px;
       }
-      .tg_welcomePill {
-        display: inline-flex;
-        padding: 10px 14px;
-        border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.22);
-        letter-spacing: 0.12em;
-        font-size: 12px;
-        text-transform: uppercase;
-        opacity: 0.92;
-      }
-      .tg_welcomeBlocks {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 16px;
-        margin-top: 16px;
-      }
-      .tg_block {
-        border-radius: 26px;
-        padding: 18px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        min-height: 280px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-      }
-      .tg_block.mission {
-        background: radial-gradient(800px 420px at 15% 20%, rgba(255, 30, 140, 0.32), transparent 55%),
-          rgba(255, 255, 255, 0.03);
-      }
-      .tg_block.vision {
-        background: radial-gradient(800px 420px at 20% 30%, rgba(60, 140, 255, 0.35), transparent 55%),
-          rgba(255, 255, 255, 0.03);
-      }
-      .tg_block.values {
-        background: radial-gradient(900px 420px at 20% 25%, rgba(0, 220, 180, 0.30), transparent 55%),
-          rgba(255, 255, 255, 0.03);
-      }
-      .tg_blockTag {
+      .tg_welcomeStamp {
+        position: absolute;
+        left: 18px;
+        bottom: 18px;
         padding: 8px 12px;
         border-radius: 999px;
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        opacity: 0.9;
+      }
+      .blob {
+        position: absolute;
+        width: 340px;
+        height: 340px;
+        border-radius: 999px;
+        filter: blur(18px);
+        opacity: 0.85;
+      }
+      .b1 {
+        left: -120px;
+        top: -120px;
+        background: radial-gradient(circle at 30% 30%, rgba(60, 80, 255, 0.9), rgba(60, 80, 255, 0.0) 60%);
+      }
+      .b2 {
+        right: -120px;
+        top: -80px;
+        background: radial-gradient(circle at 60% 40%, rgba(0, 220, 180, 0.85), rgba(0, 220, 180, 0.0) 60%);
+      }
+      .b3 {
+        left: 40px;
+        bottom: -160px;
+        background: radial-gradient(circle at 40% 60%, rgba(255, 30, 140, 0.75), rgba(255, 30, 140, 0.0) 60%);
+      }
+      .grid {
+        position: absolute;
+        inset: 0;
+        background-image: linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+        background-size: 46px 46px;
+        mask-image: radial-gradient(circle at 30% 30%, rgba(0, 0, 0, 1), transparent 65%);
+        opacity: 0.6;
+      }
+
+      .tg_about {
+        border-radius: 22px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(255, 255, 255, 0.035);
+        padding: 18px;
+      }
+
+      .tg_aboutHeader {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .tg_pill {
+        padding: 8px 12px;
+        border-radius: 999px;
+        font-size: 12px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
         border: 1px solid rgba(255, 255, 255, 0.10);
         background: rgba(0, 0, 0, 0.18);
-        letter-spacing: 0.14em;
+      }
+      .tg_aboutHint {
         font-size: 12px;
-        font-weight: 900;
-      }
-      .tg_blockText {
-        font-weight: 950;
-        letter-spacing: -0.04em;
-        font-size: 34px;
-        line-height: 1.06;
-        margin-top: 12px;
-      }
-      .tg_blockSub {
         opacity: 0.75;
+        white-space: nowrap;
+      }
+
+      .tg_aboutUnified.v2 {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 14px;
+      }
+
+      .tg_aboutBlock {
+        border-radius: 18px;
+        padding: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(0, 0, 0, 0.18);
+      }
+      .tg_aboutBlock.mission {
+        background: radial-gradient(900px 260px at 10% 20%, rgba(255, 60, 180, 0.25), transparent 60%),
+          rgba(0, 0, 0, 0.18);
+      }
+      .tg_aboutBlock.vision {
+        background: radial-gradient(900px 260px at 10% 20%, rgba(60, 140, 255, 0.24), transparent 60%),
+          rgba(0, 0, 0, 0.18);
+      }
+      .tg_aboutBlock.values {
+        background: radial-gradient(900px 260px at 10% 20%, rgba(0, 220, 180, 0.20), transparent 60%),
+          rgba(0, 0, 0, 0.18);
+      }
+
+      .tg_aboutLabel {
         font-size: 12px;
-        margin-top: 14px;
+        opacity: 0.78;
+        margin-bottom: 10px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+      .tg_aboutText {
+        font-size: 28px;
+        line-height: 1.06;
+        font-weight: 950;
+        letter-spacing: -0.03em;
+      }
+      .tg_aboutMini {
+        margin-top: 10px;
+        opacity: 0.75;
+        font-weight: 700;
+        font-size: 12px;
       }
       .tg_values {
         list-style: none;
         padding: 0;
-        margin: 14px 0 0 0;
+        margin: 0;
         display: grid;
-        gap: 10px;
+        gap: 8px;
+        margin-top: 6px;
       }
       .tg_value {
         display: flex;
         gap: 10px;
         align-items: flex-start;
-        font-size: 15px;
-        opacity: 0.95;
-        font-weight: 700;
+        font-size: 14px;
+        opacity: 0.92;
+        font-weight: 800;
       }
       .check {
-        width: 22px;
-        height: 22px;
-        border-radius: 10px;
+        width: 20px;
+        height: 20px;
+        border-radius: 8px;
         display: grid;
         place-items: center;
         background: rgba(255, 255, 255, 0.08);
         border: 1px solid rgba(255, 255, 255, 0.10);
-        flex: 0 0 22px;
+        flex: 0 0 20px;
         margin-top: 1px;
       }
       .tg_welcomeFooter {
@@ -993,12 +1179,24 @@ function GlobalStyles() {
         font-size: 12px;
       }
 
-      /* Posters */
+      /* Posters (Arrivals) — 3 por tela */
       .tg_postersRow {
         display: grid;
-        grid-template-columns: 1fr 1fr;
         gap: 16px;
         margin-top: 18px;
+      }
+      .tg_postersRow.count-3 {
+        grid-template-columns: 1fr 1fr 1fr;
+      }
+      .tg_postersRow.count-2 {
+        grid-template-columns: 1fr 1fr;
+        max-width: 1240px;
+        margin: 18px auto 0;
+      }
+      .tg_postersRow.count-1 {
+        grid-template-columns: 1fr;
+        max-width: 560px;
+        margin: 18px auto 0;
       }
       .tg_posterFrame {
         position: relative;
@@ -1024,6 +1222,7 @@ function GlobalStyles() {
         background: rgba(0, 0, 0, 0.25);
         border: 1px solid rgba(255, 255, 255, 0.10);
         font-size: 13px;
+        font-weight: 800;
       }
 
       /* Birthdays */
@@ -1033,8 +1232,7 @@ function GlobalStyles() {
         gap: 16px;
         margin-top: 14px;
       }
-      .tg_birthdaysShowcase,
-      .tg_birthdaysList {
+      .tg_birthdaysShowcase {
         border-radius: 22px;
         border: 1px solid rgba(255, 255, 255, 0.10);
         background: rgba(255, 255, 255, 0.03);
@@ -1085,6 +1283,12 @@ function GlobalStyles() {
         align-items: center;
       }
 
+      .tg_birthdaysList {
+        border-radius: 22px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(255, 255, 255, 0.03);
+        padding: 14px 14px 10px;
+      }
       .tg_listTitle {
         font-weight: 900;
         letter-spacing: -0.02em;
@@ -1128,15 +1332,16 @@ function GlobalStyles() {
         font-weight: 600;
       }
 
-      /* Weather */
-      .tg_weatherGrid {
+      /* Weather v2 */
+      .tg_weatherGrid.v2 {
         display: grid;
-        grid-template-columns: 1fr 1fr;
-        grid-template-rows: auto auto;
+        grid-template-columns: 1.2fr 0.8fr;
+        grid-template-rows: auto auto auto;
         gap: 16px;
         margin-top: 16px;
       }
       .tg_weatherNow,
+      .tg_weatherDetails,
       .tg_weatherNext,
       .tg_weatherHourly {
         border-radius: 22px;
@@ -1147,12 +1352,16 @@ function GlobalStyles() {
       .tg_weatherNow {
         grid-column: 1 / span 1;
       }
-      .tg_weatherNext {
+      .tg_weatherDetails {
         grid-column: 2 / span 1;
+      }
+      .tg_weatherNext {
+        grid-column: 1 / span 2;
       }
       .tg_weatherHourly {
         grid-column: 1 / span 2;
       }
+
       .tg_weatherBig {
         display: flex;
         align-items: center;
@@ -1160,7 +1369,7 @@ function GlobalStyles() {
         padding: 10px;
       }
       .tg_weatherEmoji {
-        font-size: 52px;
+        font-size: 56px;
       }
       .tg_weatherTemp {
         font-weight: 950;
@@ -1172,12 +1381,72 @@ function GlobalStyles() {
         opacity: 0.82;
         font-size: 14px;
         margin-top: 6px;
+        font-weight: 800;
       }
       .tg_panelTitle {
         font-weight: 900;
         margin-bottom: 10px;
         opacity: 0.95;
       }
+
+      .tg_weatherStrip {
+        margin-top: 10px;
+        display: grid;
+        grid-template-columns: repeat(4, 1fr);
+        gap: 10px;
+        padding: 10px;
+      }
+      .tg_metric {
+        border-radius: 16px;
+        padding: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.16);
+      }
+      .tg_metric .k {
+        font-size: 12px;
+        opacity: 0.75;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 900;
+      }
+      .tg_metric .v {
+        margin-top: 6px;
+        font-size: 18px;
+        font-weight: 950;
+        letter-spacing: -0.03em;
+      }
+
+      .tg_detailsGrid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+      .tg_detailCard {
+        border-radius: 16px;
+        padding: 12px;
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.16);
+      }
+      .tg_detailCard .h {
+        font-size: 12px;
+        opacity: 0.75;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 900;
+      }
+      .tg_detailCard .b {
+        margin-top: 6px;
+        font-size: 18px;
+        font-weight: 950;
+        letter-spacing: -0.03em;
+      }
+      .tg_detailsHint {
+        margin-top: 10px;
+        font-size: 12px;
+        opacity: 0.75;
+        font-weight: 700;
+      }
+
       .tg_daysRow,
       .tg_hoursRow {
         display: flex;
@@ -1200,6 +1469,7 @@ function GlobalStyles() {
         opacity: 0.8;
         letter-spacing: 0.08em;
         text-transform: uppercase;
+        font-weight: 900;
       }
       .tg_dayEmoji,
       .tg_hourEmoji {
@@ -1212,6 +1482,12 @@ function GlobalStyles() {
         gap: 8px;
         font-weight: 900;
       }
+      .tg_dayMeta {
+        margin-top: 8px;
+        font-size: 12px;
+        opacity: 0.75;
+        font-weight: 800;
+      }
       .tg_dim {
         opacity: 0.6;
         font-weight: 800;
@@ -1220,123 +1496,108 @@ function GlobalStyles() {
         font-weight: 950;
         font-size: 18px;
       }
+      .tg_hourMeta {
+        margin-top: 6px;
+        font-size: 12px;
+        opacity: 0.75;
+        font-weight: 900;
+      }
 
-      /* NEWS — agora com imagem grande */
-      .tg_newsLayout {
-        margin-top: 14px;
+      /* News */
+      .tg_newsGrid {
         display: grid;
         grid-template-columns: 1fr;
         gap: 14px;
+        margin-top: 12px;
       }
-
-      .tg_newsHero {
-        min-height: 240px;
+      .tg_newsFeatured {
+        min-height: 160px;
       }
-
-      .tg_newsMosaic {
+      .tg_newsList {
         display: grid;
         grid-template-columns: 1fr 1fr;
-        gap: 14px;
+        gap: 12px;
       }
-
-      .tg_newsTile {
-        position: relative;
-        border-radius: 26px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        overflow: hidden;
-        background: rgba(255, 255, 255, 0.03);
-        min-height: 170px;
-      }
-
-      .tg_newsTile.featured {
-        min-height: 260px;
-      }
-
-      .tg_newsTileBg {
-        position: absolute;
-        inset: 0;
-        background-size: cover;
-        background-position: center;
-        filter: saturate(1.05) contrast(1.05);
-        transform: scale(1.02);
-      }
-
-      /* fallback quando não tiver imagem */
-      .tg_newsTile:not(.featured) .tg_newsTileBg {
-        background-image: radial-gradient(900px 360px at 10% 20%, rgba(255, 60, 120, 0.25), transparent 55%),
-          radial-gradient(900px 360px at 80% 30%, rgba(60, 140, 255, 0.22), transparent 60%),
-          rgba(0, 0, 0, 0.18);
-      }
-
-      .tg_newsTileShade {
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(180deg, rgba(0, 0, 0, 0.15), rgba(0, 0, 0, 0.68));
-      }
-
-      .tg_newsTileBody {
-        position: relative;
-        z-index: 2;
-        padding: 16px;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        gap: 10px;
-      }
-
-      .tg_newsTileTop {
-        display: flex;
-        justify-content: space-between;
-        gap: 10px;
+      .tg_newsCard {
+        display: grid;
+        grid-template-columns: 84px 1fr;
+        gap: 12px;
         align-items: center;
-      }
-
-      .tg_newsPill {
-        display: inline-flex;
-        padding: 8px 12px;
-        border-radius: 999px;
+        padding: 14px;
+        border-radius: 20px;
         border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.35);
-        font-size: 12px;
-        font-weight: 900;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        opacity: 0.95;
-        max-width: 70%;
-        white-space: nowrap;
+        background: rgba(255, 255, 255, 0.03);
         overflow: hidden;
-        text-overflow: ellipsis;
       }
-
-      .tg_newsDomain {
-        font-size: 12px;
-        opacity: 0.75;
-        white-space: nowrap;
+      .tg_newsCard.featured {
+        grid-template-columns: 160px 1fr;
+        padding: 18px;
+        border-radius: 24px;
+        background: rgba(0, 0, 0, 0.18);
+      }
+      .tg_newsMedia {
+        width: 100%;
+        height: 84px;
+        border-radius: 18px;
         overflow: hidden;
-        text-overflow: ellipsis;
-        max-width: 45%;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(0, 0, 0, 0.18);
+        display: grid;
+        place-items: center;
       }
-
-      .tg_newsTileTitle {
+      .tg_newsCard.featured .tg_newsMedia {
+        height: 160px;
+        border-radius: 22px;
+      }
+      .tg_newsImg {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        filter: saturate(1.05) contrast(1.03);
+      }
+      .tg_newsMediaFallback {
+        width: 100%;
+        height: 100%;
+        display: grid;
+        place-items: center;
+        background: radial-gradient(120px 80px at 30% 30%, rgba(255, 255, 255, 0.12), transparent 60%),
+          radial-gradient(140px 100px at 70% 70%, rgba(255, 255, 255, 0.10), transparent 60%),
+          rgba(0, 0, 0, 0.22);
+      }
+      .tg_newsMediaFallback span {
         font-weight: 950;
-        letter-spacing: -0.03em;
-        font-size: 18px;
-        line-height: 1.12;
+        font-size: 28px;
+        letter-spacing: -0.04em;
+        opacity: 0.9;
+      }
+      .tg_newsBody {
+        min-width: 0;
+      }
+      .tg_newsTitle {
+        font-weight: 900;
+        letter-spacing: -0.02em;
+        font-size: 16px;
+        line-height: 1.15;
         display: -webkit-box;
         -webkit-line-clamp: 3;
         -webkit-box-orient: vertical;
         overflow: hidden;
       }
-
-      .tg_newsTile.featured .tg_newsTileTitle {
-        font-size: 26px;
-        -webkit-line-clamp: 3;
+      .tg_newsCard.featured .tg_newsTitle {
+        font-size: 22px;
+        -webkit-line-clamp: 4;
       }
-
-      .tg_newsTileHint {
+      .tg_newsMeta {
+        margin-top: 8px;
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+        opacity: 0.78;
         font-size: 12px;
-        opacity: 0.75;
+        font-weight: 800;
+      }
+      .tg_newsDomain {
+        opacity: 0.85;
       }
 
       /* Footer / ticker */
@@ -1413,6 +1674,7 @@ function GlobalStyles() {
       .tg_tickerItem {
         font-size: 13px;
         opacity: 0.9;
+        font-weight: 800;
       }
       .sep {
         margin-left: 12px;
@@ -1445,6 +1707,7 @@ function GlobalStyles() {
         opacity: 0.9;
       }
 
+      /* MusicDock */
       .tg_musicDock {
         position: fixed;
         left: 18px;
@@ -1454,6 +1717,7 @@ function GlobalStyles() {
         transform-origin: left bottom;
       }
 
+      /* Empty */
       .tg_empty {
         height: 100%;
         min-height: 180px;
@@ -1487,8 +1751,11 @@ function GlobalStyles() {
       .tg_root.tv .tg_scene {
         padding: 26px;
       }
-      .tg_root.tv .tg_blockText {
-        font-size: 30px;
+      .tg_root.tv .tg_aboutText {
+        font-size: 24px;
+      }
+      .tg_root.tv .tg_posterFrame {
+        height: 60vh;
       }
     `}</style>
   );
