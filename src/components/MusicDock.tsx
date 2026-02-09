@@ -1,3 +1,4 @@
+// src/components/MusicDock.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -9,7 +10,7 @@ type Station = {
   url: string;
 };
 
-type RadioProfileId = "agency" | "focus" | "chill";
+export type RadioProfileId = "agency" | "focus" | "chill";
 
 const DEFAULT_STATIONS: Record<RadioProfileId, Station[]> = {
   agency: [
@@ -31,11 +32,13 @@ function safeProfile(v: unknown): RadioProfileId {
   return "agency";
 }
 
-export default function MusicDock() {
+// ✅ Agora é EXPORT NOMEADO
+export function MusicDock() {
   // 👇 IMPORTANTÍSSIMO: não referenciar SIGNAGE_CONFIG.audio tipado direto
-  // porque seu config.ts é "as const" e pode não ter a chave "audio".
+  // porque seu config.ts pode não ter a chave "audio".
   // Aqui a gente lê via any e mantém o build estável.
   const cfg = SIGNAGE_CONFIG as any;
+
   const audioCfg = (cfg?.audio ?? null) as
     | {
         enabled?: boolean;
@@ -337,3 +340,6 @@ export default function MusicDock() {
     </>
   );
 }
+
+// ✅ Agora também tem EXPORT DEFAULT
+export default MusicDock;
