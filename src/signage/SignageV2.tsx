@@ -62,12 +62,6 @@ type BirthdaysApiResponse = {
   }>;
 };
 
-type BrandTab = {
-  key: string;
-  alt: string;
-  logoSrc?: string;
-};
-
 function clamp(n: number, min: number, max: number) {
   return Math.max(min, Math.min(max, n));
 }
@@ -100,6 +94,7 @@ function monthNamePt(monthIndex0: number) {
 }
 
 function formatDateLongPt(d: Date) {
+  // "segunda-feira, 09 de fevereiro de 2026"
   return d.toLocaleDateString("pt-BR", {
     weekday: "long",
     day: "2-digit",
@@ -128,20 +123,15 @@ function googleFavicon(domain?: string) {
 }
 
 /**
- * IMPORTANTÍSSIMO:
- * Removi useSearchParams() pra não quebrar build/prerender.
- * Agora TV mode lê querystring pelo window no client.
+ * TV Mode (sem useSearchParams, pra não quebrar build)
+ * Ative com: ?tv=1
  */
 function useTvMode() {
   const [tv, setTv] = useState(false);
 
   useEffect(() => {
-    try {
-      const qs = new URLSearchParams(window.location.search);
-      setTv(qs.get("tv") === "1");
-    } catch {
-      setTv(false);
-    }
+    const v = new URLSearchParams(window.location.search).get("tv");
+    setTv(v === "1");
   }, []);
 
   return tv;
@@ -162,16 +152,19 @@ export default function SignageV2() {
   const tv = useTvMode();
   const now = useClock(1000);
 
+  // ordem das telas
   const scenes: SceneId[] = useMemo(
     () => ["welcome", "arrivals", "birthdays", "weather", "news"],
     []
   );
 
+  // Tempo de cada tela (padrão 11s)
   const sceneDurationMs = useMemo(() => {
     const fromCfg = safeNumber(cfg?.sceneDurationMs, 11000);
     return clamp(fromCfg, 8000, 20000);
   }, [cfg?.sceneDurationMs]);
 
+  // refreshers
   const refreshWeatherMs = useMemo(
     () => clamp(safeNumber(cfg?.refreshWeatherMs, 10 * 60_000), 60_000, 60 * 60_000),
     [cfg?.refreshWeatherMs]
@@ -188,6 +181,7 @@ export default function SignageV2() {
   const [sceneIndex, setSceneIndex] = useState(0);
   const activeScene = scenes[sceneIndex] ?? "welcome";
 
+  // Data
   const [weather, setWeather] = useState<WeatherPayload | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [birthdays, setBirthdays] = useState<BirthdayItem[]>([]);
@@ -195,6 +189,7 @@ export default function SignageV2() {
     () => cfg?.welcomePosters ?? cfg?.arrivalsPosters ?? []
   );
 
+  // Rotação de telas
   useEffect(() => {
     const id = setInterval(() => {
       setSceneIndex((i) => (i + 1) % scenes.length);
@@ -202,7 +197,7 @@ export default function SignageV2() {
     return () => clearInterval(id);
   }, [sceneDurationMs, scenes.length]);
 
-  // Weather
+  // Fetch Weather
   useEffect(() => {
     let alive = true;
 
@@ -226,7 +221,7 @@ export default function SignageV2() {
     };
   }, [refreshWeatherMs]);
 
-  // News
+  // Fetch News
   useEffect(() => {
     let alive = true;
 
@@ -254,8 +249,7 @@ export default function SignageV2() {
         const res = await fetch("/api/news", { cache: "no-store" });
         const json = await res.json();
         if (!alive) return;
-        const normalized = normalizeNewsPayload(json);
-        setNews(normalized);
+        setNews(normalizeNewsPayload(json));
       } catch {
         if (!alive) return;
         setNews([]);
@@ -270,7 +264,7 @@ export default function SignageV2() {
     };
   }, [refreshNewsMs]);
 
-  // Birthdays
+  // Fetch Birthdays
   useEffect(() => {
     let alive = true;
 
@@ -314,6 +308,7 @@ export default function SignageV2() {
     return base;
   }, [news]);
 
+  // Header data
   const timeHHMM = useMemo(
     () => now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
     [now]
@@ -330,9 +325,9 @@ export default function SignageV2() {
     return `${Math.round(Number(t))}°C`;
   }, [weather?.tempC]);
 
-  const month0 = now.getMonth();
-  const month1 = month0 + 1;
-
+  // Birthdays do mês atual
+  const month0 = now.getMonth(); // 0..11
+  const month1 = month0 + 1; // 1..12
   const birthdaysThisMonth = useMemo(() => {
     const filtered = birthdays.filter(
       (b) => b.month === month1 || (!b.month && b.mmdd?.startsWith(pad2(month1)))
@@ -345,6 +340,7 @@ export default function SignageV2() {
     return sorted;
   }, [birthdays, month1]);
 
+  // Duas artes “rodando” (aniversários)
   const [birthdayCarouselIndex, setBirthdayCarouselIndex] = useState(0);
   useEffect(() => {
     if (birthdaysThisMonth.length <= 2) return;
@@ -361,6 +357,7 @@ export default function SignageV2() {
     return [a, b].filter(Boolean);
   }, [birthdaysThisMonth, birthdayCarouselIndex]);
 
+  // Chegadas do mês
   const [arrivalsIndex, setArrivalsIndex] = useState(0);
   useEffect(() => {
     if (!arrivals || arrivals.length <= 2) return;
@@ -377,7 +374,7 @@ export default function SignageV2() {
     return [a, b].filter(Boolean);
   }, [arrivals, arrivalsIndex]);
 
-  // Textos (mantém seus textos)
+  // About texts (mantém seu texto)
   const about = useMemo(() => {
     const mission =
       cfg?.mission ??
@@ -396,69 +393,45 @@ export default function SignageV2() {
     return { mission, vision, values };
   }, [cfg?.mission, cfg?.vision, cfg?.values]);
 
-  // Logos header (T.Group + tabs)
-  const brandLogo = cfg?.brand?.logoSrc ?? "/signage/logos/tgroup.svg";
-  const brandAlt = cfg?.brand?.alt ?? "T.Group";
-  const brandSub = cfg?.brand?.sub ?? "TV Signage • Sede • Perdizes";
-
-  const tabs: BrandTab[] = useMemo(() => {
-    const raw = cfg?.brandTabs;
-
-    if (Array.isArray(raw) && raw.length) {
-      return raw
-        .map((t: any) => {
-          if (typeof t === "string") {
-            return { key: t, alt: t, logoSrc: "" };
-          }
-          return {
-            key: t?.key ?? t?.label ?? t?.name ?? t?.alt ?? "tab",
-            alt: t?.alt ?? t?.label ?? t?.name ?? "Empresa",
-            logoSrc: t?.logoSrc ?? "",
-          } as BrandTab;
-        })
-        .filter(Boolean);
-    }
-
-    return [
-      { key: "brands", alt: "T.Brands", logoSrc: "/signage/logos/tbrands.svg" },
-      { key: "venues", alt: "T.Venues", logoSrc: "/signage/logos/tvenues.svg" },
-      { key: "dreams", alt: "T.Dreams", logoSrc: "/signage/logos/tdreams.svg" },
-      { key: "youth", alt: "T.Youth", logoSrc: "/signage/logos/tyouth.svg" },
-    ];
-  }, [cfg?.brandTabs]);
+  // Logos (usando os PNGs que você tem)
+  const brandLogos = useMemo(
+    () => [
+      { key: "T.Brands", src: "/signage/logos/tbrands.png", alt: "T.Brands" },
+      { key: "T.Venues", src: "/signage/logos/tvenues.png", alt: "T.Venues" },
+      { key: "T.Dreams", src: "/signage/logos/tdreams.png", alt: "T.Dreams" },
+      { key: "T.Youth", src: "/signage/logos/tyouth.png", alt: "T.Youth" },
+    ],
+    []
+  );
 
   return (
     <div className={`tg_root ${tv ? "tv" : ""}`} data-scene={activeScene}>
       {/* Header */}
       <header className="tg_header">
         <div className="tg_brand">
-          <div className="tg_logoWrap">
+          <div className="tg_brandLogoWrap" aria-hidden>
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img className="tg_logo" src={brandLogo} alt={brandAlt} />
+            <img className="tg_brandLogo" src="/signage/logos/tgroup-logo.png" alt="T.Group" />
           </div>
 
           <div className="tg_brandText">
-            <div className="tg_brandSub">{brandSub}</div>
+            <div className="tg_brandSub">TV Signage • Sede • Perdizes</div>
           </div>
         </div>
 
         <nav className="tg_tabs" aria-label="Empresas">
-          {tabs.map((t) => (
-            <span key={t.key} className="tg_tab tg_tabLogo" aria-label={t.alt} title={t.alt}>
-              {t.logoSrc ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  className="tg_tabImg"
-                  src={t.logoSrc}
-                  alt={t.alt}
-                  onError={(e) => {
-                    // se falhar, some (evita ficar quebrado)
-                    e.currentTarget.style.display = "none";
-                  }}
-                />
-              ) : (
-                <span className="tg_tabText">{t.alt}</span>
-              )}
+          {brandLogos.map((t) => (
+            <span key={t.key} className="tg_tab tg_tabLogo" title={t.alt}>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                className="tg_tabImg"
+                src={t.src}
+                alt={t.alt}
+                onError={(e) => {
+                  // Se der ruim com um arquivo, não quebra a navegação
+                  e.currentTarget.style.opacity = "0.35";
+                }}
+              />
             </span>
           ))}
         </nav>
@@ -474,7 +447,6 @@ export default function SignageV2() {
         {activeScene === "welcome" && (
           <section className="tg_scene">
             <h1 className="tg_title">Bem-vindas, vindes e vindos ao T.Group</h1>
-
             <div className="tg_kicker">
               <span>{locationLabel}</span>
               {tempNowLabel ? (
@@ -485,45 +457,46 @@ export default function SignageV2() {
               ) : null}
             </div>
 
-            <div className="tg_welcomeTop">
-              <span className="tg_welcomePill">ENTRETENIMENTO • LIVE MARKETING • PERFORMANCE • TECNOLOGIA</span>
-            </div>
+            {/* NOVO layout da Welcome (3 blocos) */}
+            <div className="tg_welcomeNew">
+              <div className="tg_welcomeStripe" aria-hidden />
 
-            {/* 3 blocos separados, coloridos, layout forte pra TV */}
-            <div className="tg_welcomeGrid">
-              <div className="tg_panel tg_panelMission">
-                <div className="tg_panelHead">
-                  <span className="tg_panelLabel">MISSÃO</span>
-                </div>
-                <div className="tg_panelText">{about.mission}</div>
+              <div className="tg_welcomeRowTop">
+                <div className="tg_welcomeTag">ENTRETENIMENTO • LIVE MARKETING • PERFORMANCE • TECNOLOGIA</div>
               </div>
 
-              <div className="tg_panel tg_panelVision">
-                <div className="tg_panelHead">
-                  <span className="tg_panelLabel">VISÃO</span>
+              <div className="tg_welcomeRowCards">
+                <div className="tg_bigBlock b_mission">
+                  <div className="tg_bigHead">MISSÃO</div>
+                  <div className="tg_bigText">{about.mission}</div>
+                  <div className="tg_bigFoot">Do briefing ao aplauso — com execução impecável.</div>
                 </div>
-                <div className="tg_panelText">{about.vision}</div>
+
+                <div className="tg_bigBlock b_vision">
+                  <div className="tg_bigHead">VISÃO</div>
+                  <div className="tg_bigText">{about.vision}</div>
+                  <div className="tg_bigFoot">Performance real + tecnologia, sem perder o brilho.</div>
+                </div>
+
+                <div className="tg_bigBlock b_values">
+                  <div className="tg_bigHead">VALORES</div>
+                  <ul className="tg_bigList">
+                    {about.values.map((v: string) => (
+                      <li key={v} className="tg_bigLi">
+                        <span className="tg_bigCheck" aria-hidden>
+                          ✓
+                        </span>
+                        <span>{v}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="tg_bigFoot">Cultura aqui não é frase bonita — é operação.</div>
+                </div>
               </div>
 
-              <div className="tg_panel tg_panelValues">
-                <div className="tg_panelHead">
-                  <span className="tg_panelLabel">VALORES</span>
-                </div>
-                <ul className="tg_values">
-                  {about.values.map((v: string) => (
-                    <li key={v} className="tg_value">
-                      <span className="check" aria-hidden>
-                        ✓
-                      </span>
-                      <span>{v}</span>
-                    </li>
-                  ))}
-                </ul>
+              <div className="tg_welcomeRowBottom">
+                <span className="tg_mini">Sinta-se em casa. A gente cuida do resto.</span>
               </div>
-            </div>
-
-            <div className="tg_welcomeFooterLine">
-              <span className="tg_mini">Sinta-se em casa. A gente cuida do resto.</span>
             </div>
           </section>
         )}
@@ -566,7 +539,7 @@ export default function SignageV2() {
                   <div className="tg_empty">
                     <div className="tg_emptyTitle">Sem aniversários cadastrados</div>
                     <div className="tg_emptySub">
-                      Se você já subiu as artes no GitHub, essa tela deveria preencher sozinha. Se não preencher, o problema é a API /api/birthdays.
+                      Se já subiu as artes no GitHub, essa tela passa a preencher sozinha.
                     </div>
                   </div>
                 ) : (
@@ -611,7 +584,9 @@ export default function SignageV2() {
                         <span className="tg_listLine">
                           <b>{b.name ?? "—"}</b>
                           {b.day && b.month ? (
-                            <span className="tg_listDim">{` • ${b.day} de ${monthNamePt((b.month ?? month1) - 1)}`}</span>
+                            <span className="tg_listDim">{` • ${b.day} de ${monthNamePt(
+                              (b.month ?? month1) - 1
+                            )}`}</span>
                           ) : null}
                           {b.role ? <span className="tg_listDim">{` • ${b.role}`}</span> : null}
                           {b.org ? <span className="tg_listDim">{` • ${b.org}`}</span> : null}
@@ -747,6 +722,10 @@ export default function SignageV2() {
         <MusicDock />
       </div>
 
+      <style jsx>{`
+        /* componente auxiliar NewsCard */
+      `}</style>
+
       <GlobalStyles />
     </div>
   );
@@ -756,6 +735,7 @@ function NewsCard({ item, featured }: { item: NewsItem; featured?: boolean }) {
   const domain = domainFromUrl(item.url);
   const logo = clearbitLogo(domain);
   const favicon = googleFavicon(domain);
+
   const mediaSrc = item.image || logo || favicon;
 
   return (
@@ -792,14 +772,12 @@ function NewsCard({ item, featured }: { item: NewsItem; featured?: boolean }) {
 function GlobalStyles() {
   return (
     <style jsx global>{`
-      @import url("https://fonts.googleapis.com/css2?family=Montserrat:wght@500;600;700;800;900&display=swap");
-
       .tg_root {
         min-height: 100vh;
         position: relative;
         overflow: hidden;
         color: #fff;
-        font-family: "Montserrat", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial;
+        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial;
         background: radial-gradient(1100px 600px at 12% 18%, rgba(60, 80, 255, 0.35), transparent 55%),
           radial-gradient(900px 700px at 85% 15%, rgba(0, 220, 180, 0.26), transparent 60%),
           radial-gradient(1000px 800px at 70% 90%, rgba(255, 30, 140, 0.22), transparent 60%),
@@ -813,7 +791,6 @@ function GlobalStyles() {
           radial-gradient(1000px 800px at 60% 95%, rgba(0, 220, 180, 0.18), transparent 60%),
           #05060b;
       }
-
       .tg_root[data-scene="weather"] {
         background: radial-gradient(1000px 700px at 15% 20%, rgba(0, 220, 180, 0.28), transparent 60%),
           radial-gradient(900px 650px at 80% 20%, rgba(255, 140, 30, 0.22), transparent 60%),
@@ -846,23 +823,23 @@ function GlobalStyles() {
         min-width: 280px;
       }
 
-      .tg_logoWrap {
+      /* LOGO T.Group (esquerda) */
+      .tg_brandLogoWrap {
         width: 54px;
         height: 54px;
         border-radius: 16px;
         display: grid;
         place-items: center;
-        background: rgba(255, 255, 255, 0.06);
+        background: rgba(255, 255, 255, 0.07);
         border: 1px solid rgba(255, 255, 255, 0.12);
-        box-shadow: 0 12px 34px rgba(0, 0, 0, 0.35);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
         overflow: hidden;
       }
-
-      .tg_logo {
-        width: 74%;
-        height: 74%;
+      .tg_brandLogo {
+        width: 82%;
+        height: 82%;
         object-fit: contain;
-        opacity: 0.96;
+        display: block;
         filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35));
       }
 
@@ -871,6 +848,7 @@ function GlobalStyles() {
         font-size: 12px;
       }
 
+      /* Tabs (logos no centro) */
       .tg_tabs {
         display: flex;
         gap: 10px;
@@ -884,47 +862,38 @@ function GlobalStyles() {
       .tg_tab {
         font-size: 12px;
         letter-spacing: 0.14em;
-        opacity: 0.95;
+        opacity: 0.9;
         padding: 7px 12px;
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.08);
         background: rgba(0, 0, 0, 0.12);
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
       }
 
-      .tg_tab.tg_tabLogo {
-        display: grid;
-        place-items: center;
-        width: 74px;
-        height: 38px;
-        padding: 0;
+      .tg_tabLogo {
+        padding: 10px 14px;
       }
 
       .tg_tabImg {
-        width: 46px;
-        height: 20px;
-        object-fit: contain;
-        opacity: 0.92;
-        filter: drop-shadow(0 8px 14px rgba(0, 0, 0, 0.35));
-      }
-
-      .tg_tabText {
-        font-size: 11px;
-        letter-spacing: 0.12em;
-        opacity: 0.9;
+        height: 18px;
+        width: auto;
+        display: block;
+        opacity: 0.95;
+        filter: drop-shadow(0 8px 16px rgba(0, 0, 0, 0.35));
       }
 
       .tg_clock {
         text-align: right;
         min-width: 260px;
       }
-
       .tg_time {
-        font-weight: 900;
+        font-weight: 950;
         font-size: 56px;
         letter-spacing: -0.06em;
         line-height: 0.95;
       }
-
       .tg_date {
         opacity: 0.8;
         font-size: 14px;
@@ -951,14 +920,13 @@ function GlobalStyles() {
         justify-content: space-between;
         gap: 16px;
       }
-
       .tg_sceneTag {
         opacity: 0.85;
         font-size: 14px;
       }
 
       .tg_title {
-        font-weight: 900;
+        font-weight: 950;
         letter-spacing: -0.05em;
         font-size: 54px;
         margin: 0 0 10px;
@@ -973,135 +941,177 @@ function GlobalStyles() {
         align-items: center;
         margin-bottom: 18px;
       }
-
       .dot {
         opacity: 0.6;
       }
 
-      /* Welcome */
-      .tg_welcomeTop {
+      /* WELCOME NOVA (3 blocos grandes) */
+      .tg_welcomeNew {
+        position: relative;
+        margin-top: 18px;
+        border-radius: 26px;
+        overflow: hidden;
+        padding: 18px 18px 16px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(255, 255, 255, 0.03);
+      }
+
+      .tg_welcomeStripe {
+        position: absolute;
+        inset: -30%;
+        background: radial-gradient(1200px 700px at 15% 20%, rgba(255, 60, 160, 0.35), transparent 55%),
+          radial-gradient(1000px 700px at 70% 25%, rgba(80, 140, 255, 0.30), transparent 55%),
+          radial-gradient(1000px 700px at 82% 80%, rgba(0, 220, 180, 0.22), transparent 60%);
+        filter: blur(26px);
+        opacity: 0.95;
+        pointer-events: none;
+      }
+
+      .tg_welcomeRowTop {
+        position: relative;
         display: flex;
         justify-content: flex-end;
         margin-bottom: 14px;
       }
 
-      .tg_welcomePill {
+      .tg_welcomeTag {
         padding: 10px 14px;
         border-radius: 999px;
         font-size: 12px;
-        letter-spacing: 0.12em;
+        letter-spacing: 0.14em;
         text-transform: uppercase;
         border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.16);
-        opacity: 0.9;
+        background: rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(12px);
+        opacity: 0.95;
       }
 
-      .tg_welcomeGrid {
+      .tg_welcomeRowCards {
+        position: relative;
         display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: 1.1fr 1fr 1fr;
         gap: 16px;
         align-items: stretch;
-        margin-top: 6px;
       }
 
-      .tg_panel {
-        position: relative;
+      .tg_bigBlock {
         border-radius: 26px;
-        border: 1px solid rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.12);
         overflow: hidden;
-        padding: 20px;
-        box-shadow: 0 22px 60px rgba(0, 0, 0, 0.38);
+        padding: 18px 18px 16px;
+        background: rgba(0, 0, 0, 0.20);
+        backdrop-filter: blur(14px);
+        box-shadow: 0 20px 70px rgba(0, 0, 0, 0.35);
+        min-height: 310px;
+        position: relative;
       }
 
-      .tg_panel::before {
+      .tg_bigBlock::before {
         content: "";
         position: absolute;
-        inset: 0;
-        background: radial-gradient(900px 420px at 20% 20%, rgba(255,255,255,0.18), transparent 60%);
-        opacity: 0.35;
-        pointer-events: none;
+        left: 0;
+        top: 0;
+        height: 6px;
+        width: 100%;
+        opacity: 0.9;
+        background: linear-gradient(90deg, rgba(255, 255, 255, 0.0), rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.0));
       }
 
-      .tg_panelHead {
-        position: relative;
-        display: flex;
-        justify-content: space-between;
+      .b_mission {
+        background: radial-gradient(700px 500px at 25% 20%, rgba(255, 40, 160, 0.35), transparent 60%),
+          rgba(0, 0, 0, 0.20);
+      }
+      .b_mission::before {
+        background: linear-gradient(90deg, rgba(255, 40, 160, 0.2), rgba(255, 120, 60, 0.85), rgba(255, 40, 160, 0.2));
+      }
+
+      .b_vision {
+        background: radial-gradient(700px 500px at 60% 20%, rgba(60, 140, 255, 0.35), transparent 60%),
+          rgba(0, 0, 0, 0.20);
+      }
+      .b_vision::before {
+        background: linear-gradient(90deg, rgba(60, 140, 255, 0.2), rgba(60, 140, 255, 0.9), rgba(60, 140, 255, 0.2));
+      }
+
+      .b_values {
+        background: radial-gradient(700px 500px at 70% 20%, rgba(0, 220, 180, 0.28), transparent 60%),
+          rgba(0, 0, 0, 0.20);
+      }
+      .b_values::before {
+        background: linear-gradient(90deg, rgba(0, 220, 180, 0.2), rgba(140, 255, 60, 0.85), rgba(0, 220, 180, 0.2));
+      }
+
+      .tg_bigHead {
+        display: inline-flex;
         align-items: center;
-        margin-bottom: 12px;
-      }
-
-      .tg_panelLabel {
-        position: relative;
+        justify-content: center;
         padding: 8px 12px;
         border-radius: 999px;
         font-size: 12px;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        background: rgba(0, 0, 0, 0.12);
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(12px);
+        opacity: 0.95;
+        margin-bottom: 12px;
       }
 
-      .tg_panelText {
-        position: relative;
-        font-size: 28px;
-        line-height: 1.12;
-        font-weight: 900;
-        letter-spacing: -0.03em;
+      .tg_bigText {
+        font-weight: 950;
+        letter-spacing: -0.04em;
+        font-size: 34px;
+        line-height: 1.04;
+        margin: 0 0 12px;
+        max-width: 92%;
       }
 
-      .tg_panelMission {
-        background:
-          linear-gradient(135deg, rgba(255, 70, 160, 0.38), rgba(120, 70, 255, 0.22)),
-          rgba(0, 0, 0, 0.10);
+      .tg_bigFoot {
+        opacity: 0.78;
+        font-size: 12px;
+        font-weight: 700;
+        margin-top: 10px;
       }
 
-      .tg_panelVision {
-        background:
-          linear-gradient(135deg, rgba(40, 140, 255, 0.38), rgba(30, 220, 190, 0.18)),
-          rgba(0, 0, 0, 0.10);
-      }
-
-      .tg_panelValues {
-        background:
-          linear-gradient(135deg, rgba(70, 255, 120, 0.28), rgba(255, 220, 60, 0.10)),
-          rgba(0, 0, 0, 0.10);
-      }
-
-      .tg_values {
-        position: relative;
+      .tg_bigList {
         list-style: none;
         padding: 0;
         margin: 0;
         display: grid;
         gap: 10px;
-        margin-top: 6px;
       }
 
-      .tg_value {
+      .tg_bigLi {
         display: flex;
         gap: 10px;
         align-items: flex-start;
-        font-size: 16px;
+        font-size: 14px;
         font-weight: 800;
-        opacity: 0.95;
+        opacity: 0.92;
       }
 
-      .check {
+      .tg_bigCheck {
         width: 22px;
         height: 22px;
-        border-radius: 10px;
+        border-radius: 9px;
         display: grid;
         place-items: center;
-        background: rgba(255, 255, 255, 0.10);
-        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.10);
         flex: 0 0 22px;
         margin-top: 1px;
       }
 
-      .tg_welcomeFooterLine {
-        margin-top: 14px;
-        opacity: 0.8;
+      .tg_welcomeRowBottom {
+        position: relative;
+        margin-top: 12px;
+        opacity: 0.82;
         font-size: 12px;
+        font-weight: 700;
+      }
+
+      .tg_mini {
+        display: inline-block;
       }
 
       /* Posters (Arrivals) */
@@ -1111,7 +1121,6 @@ function GlobalStyles() {
         gap: 16px;
         margin-top: 18px;
       }
-
       .tg_posterFrame {
         position: relative;
         border-radius: 22px;
@@ -1120,7 +1129,6 @@ function GlobalStyles() {
         overflow: hidden;
         height: 62vh;
       }
-
       .tg_posterImg {
         width: 100%;
         height: 100%;
@@ -1128,7 +1136,6 @@ function GlobalStyles() {
         padding: 18px;
         filter: drop-shadow(0 20px 35px rgba(0, 0, 0, 0.55));
       }
-
       .tg_posterLabel {
         position: absolute;
         left: 16px;
@@ -1147,20 +1154,17 @@ function GlobalStyles() {
         gap: 16px;
         margin-top: 14px;
       }
-
       .tg_birthdaysShowcase {
         border-radius: 22px;
         border: 1px solid rgba(255, 255, 255, 0.10);
         background: rgba(255, 255, 255, 0.03);
         padding: 14px;
       }
-
       .tg_birthdaysCards {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 14px;
       }
-
       .tg_bdayFrame {
         position: relative;
         border-radius: 20px;
@@ -1169,14 +1173,12 @@ function GlobalStyles() {
         background: rgba(0, 0, 0, 0.2);
         height: 52vh;
       }
-
       .tg_bdayImg {
         width: 100%;
         height: 100%;
         object-fit: contain;
         padding: 14px;
       }
-
       .tg_bdayOverlay {
         position: absolute;
         left: 12px;
@@ -1188,14 +1190,12 @@ function GlobalStyles() {
         border: 1px solid rgba(255, 255, 255, 0.10);
         backdrop-filter: blur(10px);
       }
-
       .tg_bdayName {
         font-weight: 900;
         letter-spacing: -0.03em;
         font-size: 16px;
         margin-bottom: 3px;
       }
-
       .tg_bdayMeta {
         font-size: 12px;
         opacity: 0.86;
@@ -1211,18 +1211,15 @@ function GlobalStyles() {
         background: rgba(255, 255, 255, 0.03);
         padding: 14px 14px 10px;
       }
-
       .tg_listTitle {
         font-weight: 900;
         letter-spacing: -0.02em;
         margin-bottom: 10px;
       }
-
       .tg_listEmpty {
         opacity: 0.7;
         font-size: 13px;
       }
-
       .tg_list {
         list-style: none;
         padding: 0;
@@ -1230,7 +1227,6 @@ function GlobalStyles() {
         display: grid;
         gap: 10px;
       }
-
       .tg_listItem {
         display: flex;
         gap: 10px;
@@ -1240,7 +1236,6 @@ function GlobalStyles() {
         border: 1px solid rgba(255, 255, 255, 0.08);
         background: rgba(0, 0, 0, 0.16);
       }
-
       .tg_bullet {
         width: 10px;
         height: 10px;
@@ -1250,12 +1245,10 @@ function GlobalStyles() {
         opacity: 0.9;
         flex: 0 0 10px;
       }
-
       .tg_listLine {
         font-size: 14px;
         line-height: 1.2;
       }
-
       .tg_listDim {
         opacity: 0.75;
         font-weight: 600;
@@ -1269,7 +1262,6 @@ function GlobalStyles() {
         gap: 16px;
         margin-top: 16px;
       }
-
       .tg_weatherNow,
       .tg_weatherNext,
       .tg_weatherHourly {
@@ -1278,48 +1270,40 @@ function GlobalStyles() {
         background: rgba(255, 255, 255, 0.03);
         padding: 14px;
       }
-
       .tg_weatherHourly {
         grid-column: 1 / span 2;
       }
-
       .tg_weatherBig {
         display: flex;
         align-items: center;
         gap: 16px;
         padding: 10px;
       }
-
       .tg_weatherEmoji {
         font-size: 52px;
       }
-
       .tg_weatherTemp {
-        font-weight: 900;
+        font-weight: 950;
         font-size: 54px;
         letter-spacing: -0.06em;
         line-height: 0.95;
       }
-
       .tg_weatherDesc {
         opacity: 0.82;
         font-size: 14px;
         margin-top: 6px;
       }
-
       .tg_panelTitle {
         font-weight: 900;
         margin-bottom: 10px;
         opacity: 0.95;
       }
-
       .tg_daysRow,
       .tg_hoursRow {
         display: flex;
         gap: 10px;
         overflow: hidden;
       }
-
       .tg_dayCard,
       .tg_hourCard {
         flex: 1;
@@ -1330,7 +1314,6 @@ function GlobalStyles() {
         background: rgba(0, 0, 0, 0.16);
         text-align: center;
       }
-
       .tg_dayLabel,
       .tg_hourLabel {
         font-size: 12px;
@@ -1338,27 +1321,23 @@ function GlobalStyles() {
         letter-spacing: 0.08em;
         text-transform: uppercase;
       }
-
       .tg_dayEmoji,
       .tg_hourEmoji {
         font-size: 22px;
         margin: 8px 0 6px;
       }
-
       .tg_dayTemps {
         display: flex;
         justify-content: center;
         gap: 8px;
         font-weight: 900;
       }
-
       .tg_dim {
         opacity: 0.6;
         font-weight: 800;
       }
-
       .tg_hourTemp {
-        font-weight: 900;
+        font-weight: 950;
         font-size: 18px;
       }
 
@@ -1369,17 +1348,14 @@ function GlobalStyles() {
         gap: 14px;
         margin-top: 12px;
       }
-
       .tg_newsFeatured {
         min-height: 160px;
       }
-
       .tg_newsList {
         display: grid;
         grid-template-columns: 1fr 1fr;
         gap: 12px;
       }
-
       .tg_newsCard {
         display: grid;
         grid-template-columns: 84px 1fr;
@@ -1391,14 +1367,12 @@ function GlobalStyles() {
         background: rgba(255, 255, 255, 0.03);
         overflow: hidden;
       }
-
       .tg_newsCard.featured {
         grid-template-columns: 140px 1fr;
         padding: 18px;
         border-radius: 24px;
         background: rgba(0, 0, 0, 0.18);
       }
-
       .tg_newsMedia {
         width: 100%;
         height: 84px;
@@ -1409,23 +1383,19 @@ function GlobalStyles() {
         display: grid;
         place-items: center;
       }
-
       .tg_newsCard.featured .tg_newsMedia {
         height: 140px;
         border-radius: 22px;
       }
-
       .tg_newsImg {
         width: 100%;
         height: 100%;
         object-fit: cover;
         filter: saturate(1.05) contrast(1.03);
       }
-
       .tg_newsBody {
         min-width: 0;
       }
-
       .tg_newsTitle {
         font-weight: 900;
         letter-spacing: -0.02em;
@@ -1436,12 +1406,10 @@ function GlobalStyles() {
         -webkit-box-orient: vertical;
         overflow: hidden;
       }
-
       .tg_newsCard.featured .tg_newsTitle {
         font-size: 20px;
         -webkit-line-clamp: 4;
       }
-
       .tg_newsMeta {
         margin-top: 8px;
         display: flex;
@@ -1450,7 +1418,6 @@ function GlobalStyles() {
         opacity: 0.78;
         font-size: 12px;
       }
-
       .tg_newsDomain {
         opacity: 0.85;
       }
@@ -1467,8 +1434,8 @@ function GlobalStyles() {
         align-items: center;
         pointer-events: none;
       }
-
       .tg_livePill {
+        pointer-events: none;
         display: inline-flex;
         gap: 10px;
         align-items: center;
@@ -1481,7 +1448,6 @@ function GlobalStyles() {
         letter-spacing: 0.12em;
         font-size: 12px;
       }
-
       .tg_liveDot {
         width: 10px;
         height: 10px;
@@ -1489,8 +1455,8 @@ function GlobalStyles() {
         background: #ff3b3b;
         box-shadow: 0 0 0 6px rgba(255, 59, 59, 0.18);
       }
-
       .tg_ticker {
+        pointer-events: none;
         position: relative;
         border-radius: 999px;
         border: 1px solid rgba(255, 255, 255, 0.10);
@@ -1499,7 +1465,6 @@ function GlobalStyles() {
         overflow: hidden;
         padding: 10px 0;
       }
-
       .tg_tickerFade {
         position: absolute;
         top: 0;
@@ -1507,23 +1472,19 @@ function GlobalStyles() {
         width: 80px;
         z-index: 2;
       }
-
       .tg_tickerFade.left {
         left: 0;
         background: linear-gradient(90deg, rgba(0, 0, 0, 0.55), transparent);
       }
-
       .tg_tickerFade.right {
         right: 0;
         background: linear-gradient(270deg, rgba(0, 0, 0, 0.55), transparent);
       }
-
       .tg_tickerTrack {
         position: relative;
         z-index: 1;
         overflow: hidden;
       }
-
       .tg_tickerRow {
         display: inline-flex;
         white-space: nowrap;
@@ -1532,29 +1493,30 @@ function GlobalStyles() {
         padding-left: 18px;
         animation: tgMarquee var(--tickerDuration, 60s) linear infinite;
       }
-
       .tg_tickerItem {
         font-size: 13px;
         opacity: 0.9;
       }
-
       .sep {
         margin-left: 12px;
         opacity: 0.55;
       }
-
       @keyframes tgMarquee {
-        from { transform: translateX(0); }
-        to { transform: translateX(-50%); }
+        from {
+          transform: translateX(0);
+        }
+        to {
+          transform: translateX(-50%);
+        }
       }
 
       .tg_footerPills {
+        pointer-events: none;
         display: inline-flex;
         gap: 10px;
         justify-content: flex-end;
         align-items: center;
       }
-
       .tg_chip {
         padding: 12px 14px;
         border-radius: 999px;
@@ -1588,14 +1550,12 @@ function GlobalStyles() {
         padding: 22px;
         text-align: center;
       }
-
       .tg_emptyTitle {
-        font-weight: 900;
+        font-weight: 950;
         letter-spacing: -0.03em;
         font-size: 18px;
         margin-bottom: 6px;
       }
-
       .tg_emptySub {
         opacity: 0.75;
         font-size: 13px;
@@ -1606,17 +1566,26 @@ function GlobalStyles() {
       .tg_root.tv .tg_time {
         font-size: 54px;
       }
-
       .tg_root.tv .tg_title {
         font-size: 46px;
       }
-
       .tg_root.tv .tg_scene {
         padding: 26px;
       }
 
-      .tg_root.tv .tg_panelText {
-        font-size: 26px;
+      /* Ajuste fino: texto gigante na welcome pra TV ficar “uau” sem estourar */
+      .tg_root.tv .tg_bigText {
+        font-size: 32px;
+      }
+
+      /* Responsivo de segurança */
+      @media (max-width: 1100px) {
+        .tg_welcomeRowCards {
+          grid-template-columns: 1fr;
+        }
+        .tg_bigBlock {
+          min-height: auto;
+        }
       }
     `}</style>
   );
