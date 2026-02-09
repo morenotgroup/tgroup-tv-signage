@@ -1,0 +1,132 @@
+.wrap{
+  height: 100%;
+  width: 100%;
+  display:flex;
+  flex-direction:column;
+  gap: 18px;
+}
+
+.headerLine{
+  padding: 10px 4px 0 4px;
+}
+
+.title{
+  font-size: 56px;
+  line-height: 1.05;
+  letter-spacing: -0.02em;
+  font-weight: 800;
+}
+
+.subtitle{
+  margin-top: 10px;
+  opacity: .8;
+  font-size: 16px;
+}
+
+.grid{
+  flex: 1;
+  display:grid;
+  grid-template-columns: 1.05fr 0.95fr;
+  gap: 18px;
+  min-height: 0;
+}
+
+/* stack da esquerda (missão + visão) */
+.stack{
+  display:flex;
+  flex-direction:column;
+  gap: 18px;
+  min-height: 0;
+}
+
+.card{
+  position:relative;
+  border-radius: 22px;
+  padding: 18px 18px 16px 18px;
+  background: rgba(10, 14, 20, 0.25);
+  border: 1px solid rgba(255,255,255,0.10);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  overflow:hidden;
+}
+
+.cardTop{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.pill{
+  font-size: 12px;
+  letter-spacing: .16em;
+  font-weight: 800;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+.topTag{
+  font-size: 12px;
+  opacity: .75;
+  padding: 8px 12px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  white-space: nowrap;
+}
+
+.cardBody{
+  display:flex;
+  flex-direction:column;
+  gap: 10px;
+}
+
+.bigText{
+  font-size: 34px;
+  line-height: 1.12;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+
+.smallText{
+  font-size: 14px;
+  opacity: .80;
+}
+
+.values{
+  display:flex;
+  flex-direction:column;
+}
+
+.valuesList{
+  list-style:none;
+  padding:0;
+  margin: 8px 0 0 0;
+  display:flex;
+  flex-direction:column;
+  gap: 14px;
+  font-size: 16px;
+  font-weight: 650;
+}
+
+.check{
+  display:inline-block;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+  border: 1px solid rgba(255,255,255,0.10);
+  text-align:center;
+  line-height: 22px;
+  margin-right: 10px;
+  font-weight: 900;
+}
+
+.footerNote{
+  margin-top: 18px;
+  font-size: 13px;
+  opacity: .75;
+}
