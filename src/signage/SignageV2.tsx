@@ -4,1357 +4,1437 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { SIGNAGE_CONFIG } from "../config";
 import MusicDock from "../components/MusicDock";
 
+type ScreenId = "welcome" | "birthdays" | "weather" | "news" | "arrivals";
+
+type NewsItem = {
+  title: string;
+  source?: string;
+  url?: string;
+  image?: string;
+};
+
+type WeatherNow = {
+  tempC?: number;
+  description?: string;
+  emoji?: string;
+};
+
+type WeatherHour = {
+  time: string; // ISO
+  tempC?: number;
+  description?: string;
+  emoji?: string;
+};
+
+type WeatherDay = {
+  date: string; // YYYY-MM-DD
+  minC?: number;
+  maxC?: number;
+  description?: string;
+  emoji?: string;
+};
+
+type WeatherPayload = {
+  ok: boolean;
+  // backward compat (se já existia)
+  tempC?: number;
+  description?: string;
+  emoji?: string;
+
+  current?: WeatherNow;
+  hourly?: WeatherHour[];
+  daily?: WeatherDay[];
+};
+
+function cx(...parts: Array<string | false | null | undefined>) {
+  return parts.filter(Boolean).join(" ");
+}
+
 function pad2(n: number) {
   return String(n).padStart(2, "0");
 }
 
-function clamp(n: number, a: number, b: number) {
-  return Math.max(a, Math.min(b, n));
-}
-
-function formatTimePtBR(now: Date) {
-  return new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(now);
-}
-
-function formatDatePtBR(now: Date) {
+function formatDatePt(d: Date) {
   return new Intl.DateTimeFormat("pt-BR", {
     weekday: "long",
     day: "2-digit",
     month: "long",
     year: "numeric",
-  }).format(now);
+  }).format(d);
 }
 
-function formatMonthPtBR(monthIndex: number) {
-  const d = new Date(2026, monthIndex, 1);
+function monthNamePt(monthIndex0: number) {
+  const d = new Date(2026, monthIndex0, 1);
   return new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(d);
 }
 
-type WeatherLike = {
-  tempC?: number;
-  temp?: number;
-  temperature?: number;
-  description?: string;
-  condition?: string;
-  icon?: string;
-  emoji?: string;
-
-  // “premium”
-  hourly?: Array<{ time?: string; tempC?: number; temp?: number; temperature?: number; emoji?: string; description?: string }>;
-  daily?: Array<{ date?: string; minC?: number; maxC?: number; emoji?: string; description?: string }>;
-};
-
-type NewsItem = {
-  title: string;
-  url?: string;
-  source?: string;
-  image?: string;
-};
-
-function readTempC(weather: WeatherLike | null): number | null {
-  if (!weather) return null;
-  const v = Number(weather.tempC ?? weather.temp ?? weather.temperature ?? NaN);
-  return Number.isFinite(v) ? v : null;
+function weekdayShortPt(d: Date) {
+  const txt = new Intl.DateTimeFormat("pt-BR", { weekday: "short" }).format(d);
+  // “seg.” -> “seg”
+  return txt.replace(".", "").toLowerCase();
 }
 
-function domainFromUrl(u?: string) {
-  if (!u) return "";
-  try {
-    return new URL(u).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
-  }
+function safeNumber(v: any): number | undefined {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : undefined;
 }
 
-function faviconFor(domain: string) {
-  if (!domain) return "";
-  // Google S2 favicons (simples, rápido e funciona bem em TV)
-  return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=64`;
+/**
+ * Espera mmdd (ex: 0203) ou "02/03" etc.
+ * Retorna { monthIndex0, day }
+ */
+function parseMonthDay(mmdd: string): { monthIndex0: number; day: number } | null {
+  if (!mmdd) return null;
+  const s = String(mmdd).trim();
+  const digits = s.replace(/\D/g, "");
+  if (digits.length < 4) return null;
+
+  // assume MMDD
+  const mm = Number(digits.slice(0, 2));
+  const dd = Number(digits.slice(2, 4));
+  if (!mm || !dd) return null;
+  return { monthIndex0: mm - 1, day: dd };
 }
 
-function normalizeNews(payload: any): NewsItem[] {
-  const raw = payload?.items || payload?.news || payload?.articles || payload?.headlines || [];
-  if (!Array.isArray(raw)) return [];
+/**
+ * Label “Giulia Costa • Facilities • T.Group”
+ * ou “Giulia • T.Group”
+ */
+function splitLabel(label?: string) {
+  const raw = (label || "").trim();
+  if (!raw) return { name: "", meta: "" };
+  const parts = raw.split("•").map((p) => p.trim()).filter(Boolean);
+  if (parts.length === 1) return { name: parts[0], meta: "" };
+  return { name: parts[0], meta: parts.slice(1).join(" • ") };
+}
 
-  const items: NewsItem[] = raw
-    .map((x: any) => {
-      if (typeof x === "string") return { title: x };
-      const title = String(x?.title || x?.headline || "").trim();
+function normalizeNewsPayload(payload: any): NewsItem[] {
+  if (!payload) return [];
+  const items = payload.items || payload.news || payload.data || payload;
+  if (!Array.isArray(items)) return [];
+  return items
+    .map((it: any) => {
+      if (typeof it === "string") return { title: it };
+      const title = String(it.title || it.name || it.headline || "").trim();
       if (!title) return null;
       return {
         title,
-        url: x?.url || x?.link,
-        source: x?.source || x?.site || domainFromUrl(x?.url || x?.link),
-        image: x?.image || x?.thumbnail || x?.thumb || x?.enclosure,
+        source: it.source || it.site || it.publisher,
+        url: it.url || it.link,
+        image: it.image || it.thumbnail || it.enclosure,
       } as NewsItem;
     })
     .filter(Boolean) as NewsItem[];
+}
 
-  // remove duplicados por title
-  const seen = new Set<string>();
-  const out: NewsItem[] = [];
-  for (const it of items) {
-    const k = it.title.toLowerCase();
-    if (seen.has(k)) continue;
-    seen.add(k);
-    out.push(it);
+function faviconFrom(item: NewsItem) {
+  // prioriza URL real (favicons mais confiáveis)
+  if (item.url) {
+    return `https://www.google.com/s2/favicons?sz=128&domain_url=${encodeURIComponent(item.url)}`;
   }
-  return out.slice(0, 18);
+  // fallback se source já vier como domínio
+  if (item.source && item.source.includes(".")) {
+    return `https://www.google.com/s2/favicons?sz=128&domain=${encodeURIComponent(item.source)}`;
+  }
+  return null;
 }
 
-function normalizeTicker(items: NewsItem[], fallback: string) {
-  const base = items.length
-    ? items
-        .slice(0, 12)
-        .map((i) => (i.source ? `${i.title} — ${i.source}` : i.title))
-        .join(" • ")
-    : fallback;
+function getBrandTabs(cfg: any) {
+  const fallback = ["BRANDS", "VENUES", "DREAMS", "YOUTH"].map((t) => ({ key: t, label: t }));
+  const tabs = cfg?.brandTabs;
+  if (!Array.isArray(tabs)) return fallback;
 
-  return base.endsWith("•") ? base : `${base} •`;
+  return tabs.map((b: any) => {
+    if (typeof b === "string") return { key: b, label: b.toUpperCase() };
+    const key = String(b.key || b.id || b.slug || b.label || b.name || "").trim() || "TAB";
+    const label = String(b.label || b.name || b.key || b.id || "").trim() || key;
+    return { key, label: label.toUpperCase() };
+  });
 }
 
-type Poster = { src: string; label?: string; mmdd?: string; mm?: string };
+function clampTitleClass() {
+  // só um helper pra ficar legível no JSX
+  return "tg-title";
+}
 
-function isMmddMatch(key: string, mm: number, dd: number) {
-  const mmdd = `${pad2(mm)}${pad2(dd)}`;
-  const ddmm = `${pad2(dd)}${pad2(mm)}`;
-  return key === mmdd || key === ddmm;
+function pickScreenOrder(cfg: any): ScreenId[] {
+  const configured = cfg?.screenOrder;
+  const fallback: ScreenId[] = ["welcome", "birthdays", "weather", "news", "arrivals"];
+  if (!Array.isArray(configured)) return fallback;
+
+  const normalized = configured
+    .map((s: any) => String(s).trim().toLowerCase())
+    .filter(Boolean);
+
+  const allowed = new Set<ScreenId>(["welcome", "birthdays", "weather", "news", "arrivals"]);
+  const filtered = normalized.filter((s: string) => allowed.has(s as ScreenId)) as ScreenId[];
+  return filtered.length ? filtered : fallback;
+}
+
+function useInterval(cb: () => void, ms: number | null) {
+  const ref = useRef(cb);
+  useEffect(() => {
+    ref.current = cb;
+  }, [cb]);
+
+  useEffect(() => {
+    if (!ms) return;
+    const id = window.setInterval(() => ref.current(), ms);
+    return () => window.clearInterval(id);
+  }, [ms]);
 }
 
 export default function SignageV2() {
-  const CFG = SIGNAGE_CONFIG as any; // evita erro chato de typing (ex: groupLogoSrc)
+  const cfg = SIGNAGE_CONFIG as any;
 
   const [now, setNow] = useState(() => new Date());
-  const [scene, setScene] = useState(0);
-  const [lastSync, setLastSync] = useState<Date | null>(null);
+  useInterval(() => setNow(new Date()), 1000);
 
-  const [weather, setWeather] = useState<WeatherLike | null>(null);
+  const params = useMemo(() => {
+    if (typeof window === "undefined") return new URLSearchParams();
+    return new URLSearchParams(window.location.search);
+  }, []);
+
+  const tvMode = params.get("tv") === "1";
+  const forcedScreen = (params.get("screen") || "").toLowerCase() as ScreenId;
+
+  const screenOrder = useMemo(() => pickScreenOrder(cfg), [cfg]);
+  const [screen, setScreen] = useState<ScreenId>(() => {
+    if (forcedScreen && screenOrder.includes(forcedScreen)) return forcedScreen;
+    return screenOrder[0];
+  });
+
+  // Rotação automática (só quando não for forçado por query)
+  const rotateSeconds = safeNumber(cfg?.rotateSeconds) ?? (tvMode ? 18 : 22);
+  useInterval(
+    () => {
+      if (forcedScreen && screenOrder.includes(forcedScreen)) return;
+      setScreen((prev) => {
+        const idx = screenOrder.indexOf(prev);
+        const next = screenOrder[(idx + 1 + screenOrder.length) % screenOrder.length];
+        return next;
+      });
+    },
+    screenOrder.length > 1 ? rotateSeconds * 1000 : null
+  );
+
+  // Dados: Weather / News
+  const [weather, setWeather] = useState<WeatherPayload | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
+  const [newsErr, setNewsErr] = useState<string | null>(null);
 
-  const [manifestoIndex, setManifestoIndex] = useState(0);
-  const wakeLockRef = useRef<any>(null);
-
-  const tvMode = useMemo(() => {
+  async function loadWeather() {
     try {
-      return new URLSearchParams(window.location.search).get("tv") === "1";
+      const res = await fetch("/api/weather", { cache: "no-store" });
+      const json = (await res.json()) as WeatherPayload;
+      setWeather(json);
     } catch {
-      return false;
+      setWeather(null);
     }
-  }, []);
+  }
 
-  const monthIndex = now.getMonth(); // 0..11
-  const monthKey = useMemo(() => pad2(monthIndex + 1), [monthIndex]);
-
-  const locationLine = useMemo(() => {
-    // pedido: manter “Perdizes - São Paulo”
-    return CFG.locationLine || "Perdizes - São Paulo";
-  }, [CFG.locationLine]);
-
-  const manifestoLines: string[] = useMemo(() => {
-    // Você pode sobrescrever no config com `manifestoLines`
-    return (
-      (Array.isArray(CFG.manifestoLines) && CFG.manifestoLines.length ? CFG.manifestoLines : null) || [
-        "Missão: criar experiências memoráveis que conectam pessoas, marcas e cultura.",
-        "Visão: ser referência em entretenimento e live marketing com performance e tecnologia.",
-        "Valores: respeito, diversidade, espaços seguros, excelência e espírito de time.",
-        "Aqui a energia é jovem — e o cuidado com gente é sério.",
-      ]
-    );
-  }, [CFG.manifestoLines]);
-
-  // relógio
-  useEffect(() => {
-    const t = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
-
-  // manifesto rotativo (home)
-  useEffect(() => {
-    const t = setInterval(() => {
-      setManifestoIndex((i) => (i + 1) % Math.max(1, manifestoLines.length));
-    }, 5500);
-    return () => clearInterval(t);
-  }, [manifestoLines.length]);
-
-  // fetch weather/news
-  useEffect(() => {
-    let alive = true;
-
-    async function refreshAll() {
-      try {
-        const [w, n] = await Promise.allSettled([
-          fetch("/api/weather", { cache: "no-store" }).then((r) => r.json()),
-          fetch("/api/news", { cache: "no-store" }).then((r) => r.json()),
-        ]);
-
-        if (!alive) return;
-
-        if (w.status === "fulfilled") setWeather(w.value || null);
-
-        if (n.status === "fulfilled") {
-          const items = normalizeNews(n.value);
-          setNews(items);
-        }
-
-        setLastSync(new Date());
-      } catch {
-        if (!alive) return;
-        setLastSync(new Date());
-      }
-    }
-
-    void refreshAll();
-
-    const wt = setInterval(refreshAll, Number(CFG.refreshWeatherMs ?? 10 * 60 * 1000));
-    const nt = setInterval(refreshAll, Number(CFG.refreshNewsMs ?? 20 * 60 * 1000));
-
-    return () => {
-      alive = false;
-      clearInterval(wt);
-      clearInterval(nt);
-    };
-  }, [CFG.refreshWeatherMs, CFG.refreshNewsMs]);
-
-  // wake lock (tv)
-  useEffect(() => {
-    async function lock() {
-      try {
-        // @ts-ignore
-        if ("wakeLock" in navigator && tvMode) {
-          // @ts-ignore
-          wakeLockRef.current = await navigator.wakeLock.request("screen");
-        }
-      } catch {}
-    }
-    void lock();
-    return () => {
-      try {
-        wakeLockRef.current?.release?.();
-      } catch {}
-    };
-  }, [tvMode]);
-
-  // ===== Posters / Aniversariantes =====
-  const birthdayPosters: Poster[] = useMemo(() => {
-    const list = Array.isArray(CFG.birthdayPosters) ? CFG.birthdayPosters : [];
-    return list.filter((x: any) => x?.src);
-  }, [CFG.birthdayPosters]);
-
-  const birthdaysToday: Poster[] = useMemo(() => {
-    const mm = monthIndex + 1;
-    const dd = now.getDate();
-    return birthdayPosters.filter((p: any) => p?.mmdd && isMmddMatch(String(p.mmdd), mm, dd));
-  }, [birthdayPosters, monthIndex, now]);
-
-  const birthdaysThisMonth: Poster[] = useMemo(() => {
-    const mm = monthIndex + 1;
-    return birthdayPosters.filter((p: any) => {
-      const key = String(p?.mmdd || "");
-      return key.startsWith(pad2(mm)) || key.endsWith(pad2(mm));
-    });
-  }, [birthdayPosters, monthIndex]);
-
-  const monthCarouselPair: Poster[] = useMemo(() => {
-    if (!birthdaysThisMonth.length) return [];
-    const dur = Number(CFG.sceneDurationMs || 14000);
-    const idx = Math.floor((now.getTime() / dur) % birthdaysThisMonth.length);
-    const a = birthdaysThisMonth[idx];
-    const b = birthdaysThisMonth[(idx + 1) % birthdaysThisMonth.length];
-    return [a, b].filter(Boolean) as Poster[];
-  }, [birthdaysThisMonth, now, CFG.sceneDurationMs]);
-
-  // ===== Chegadas do mês =====
-  const welcomePosters: Poster[] = useMemo(() => {
-    const list = Array.isArray(CFG.welcomePosters) ? CFG.welcomePosters : [];
-    return list.filter((x: any) => x?.src);
-  }, [CFG.welcomePosters]);
-
-  const welcomeMonthList: Poster[] = useMemo(() => {
-    return welcomePosters.filter((p: any) => String(p?.mm || "") === monthKey);
-  }, [welcomePosters, monthKey]);
-
-  const welcomeCards = useMemo(() => {
-    if (!welcomeMonthList.length) return [];
-    const max = tvMode ? 4 : 2; // menor e mais elegante na TV
-    const dur = Number(CFG.sceneDurationMs || 14000);
-    const start = Math.floor((now.getTime() / dur) % welcomeMonthList.length);
-    const out: Poster[] = [];
-    for (let i = 0; i < Math.min(max, welcomeMonthList.length); i++) {
-      out.push(welcomeMonthList[(start + i) % welcomeMonthList.length]);
-    }
-    return out;
-  }, [welcomeMonthList, now, CFG.sceneDurationMs, tvMode]);
-
-  const hasWelcomersThisMonth = welcomeMonthList.length > 0;
-
-  // rotate scenes
-  useEffect(() => {
-    const ms = clamp(Number(CFG.sceneDurationMs || 14000), 8000, 60000);
-    const sceneCount = hasWelcomersThisMonth ? 5 : 4;
-    const t = setInterval(() => setScene((s) => (s + 1) % sceneCount), ms);
-    return () => clearInterval(t);
-  }, [hasWelcomersThisMonth, CFG.sceneDurationMs]);
-
-  const tempC = readTempC(weather);
-  const tempLabel = tempC == null ? "—" : `${Math.round(tempC)}°C`;
-
-  const tickerText = useMemo(() => {
-    return normalizeTicker(news, String(CFG.defaultTicker || "T.Group • Atualizações ao vivo •"));
-  }, [news, CFG.defaultTicker]);
-
-  const marqueeDurationSec = useMemo(() => {
-    // mais lento (pedido). Ajusta conforme tamanho do texto
-    const len = tickerText.length;
-    const raw = 55 + Math.round(len / 30) * 10; // cresce a cada ~30 chars
-    return clamp(raw, 60, 140);
-  }, [tickerText]);
-
-  async function onEnterFullscreen() {
+  async function loadNews() {
     try {
-      const el = document.documentElement as any;
-      if (el.requestFullscreen) await el.requestFullscreen();
-      else if (el.webkitRequestFullscreen) await el.webkitRequestFullscreen();
-    } catch {}
+      const res = await fetch("/api/news", { cache: "no-store" });
+      const json = await res.json();
+      const items = normalizeNewsPayload(json);
+      setNews(items);
+      setNewsErr(null);
+    } catch {
+      setNews([]);
+      setNewsErr("Falha ao carregar news");
+    }
   }
 
-  function Logo({ src, alt }: { src?: string; alt: string }) {
-    if (!src) return null;
+  useEffect(() => {
+    loadWeather();
+    loadNews();
+    // refresh periódico (clima e notícias)
+    const w = window.setInterval(loadWeather, 10 * 60 * 1000);
+    const n = window.setInterval(loadNews, 8 * 60 * 1000);
+    return () => {
+      window.clearInterval(w);
+      window.clearInterval(n);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const brandTabs = useMemo(() => getBrandTabs(cfg), [cfg]);
+
+  const locationLabel =
+    String(cfg?.locationLabel || "Perdizes - São Paulo").trim() || "Perdizes - São Paulo";
+
+  const groupLogoSrc =
+    (SIGNAGE_CONFIG as any)?.groupLogoSrc ||
+    (SIGNAGE_CONFIG as any)?.logos?.tgroup ||
+    (SIGNAGE_CONFIG as any)?.logoSrc ||
+    null;
+
+  // Weather normalization (compat)
+  const current: WeatherNow | null = useMemo(() => {
+    if (!weather) return null;
+    const c = weather.current;
+    if (c && (c.tempC !== undefined || c.description || c.emoji)) return c;
+    return {
+      tempC: weather.tempC,
+      description: weather.description,
+      emoji: weather.emoji,
+    };
+  }, [weather]);
+
+  const hourly = useMemo(() => weather?.hourly || [], [weather]);
+  const daily = useMemo(() => weather?.daily || [], [weather]);
+
+  const tempNow = useMemo(() => {
+    const t = safeNumber(current?.tempC);
+    return t !== undefined ? Math.round(t) : undefined;
+  }, [current]);
+
+  const topRightTime = `${pad2(now.getHours())}:${pad2(now.getMinutes())}`;
+
+  // Ticker (mais lento)
+  const tickerDurationSec = safeNumber(cfg?.tickerDurationSec) ?? 52;
+
+  // ====== DATA: Birthdays / Arrivals
+  const birthdayPosters = Array.isArray(cfg?.birthdayPosters) ? cfg.birthdayPosters : [];
+  const welcomePosters = Array.isArray(cfg?.welcomePosters) ? cfg.welcomePosters : [];
+
+  const monthIndex0 = now.getMonth();
+
+  const birthdaysThisMonth = useMemo(() => {
+    const list = birthdayPosters
+      .map((p: any) => {
+        const md = parseMonthDay(String(p.mmdd || p.date || p.day || ""));
+        if (!md) return null;
+        if (md.monthIndex0 !== monthIndex0) return null;
+        const label = String(p.label || p.name || "").trim();
+        const { name, meta } = splitLabel(label);
+        return {
+          ...p,
+          _md: md,
+          _name: name || label,
+          _meta: meta,
+          _label: label,
+        };
+      })
+      .filter(Boolean) as any[];
+
+    // ordem alfabética pelo nome
+    list.sort((a, b) => String(a._name).localeCompare(String(b._name), "pt-BR", { sensitivity: "base" }));
+    return list;
+  }, [birthdayPosters, monthIndex0]);
+
+  const birthdaysToday = useMemo(() => {
+    const todayMm = now.getMonth() + 1;
+    const todayDd = now.getDate();
+    return birthdaysThisMonth.filter((p: any) => p?._md?.day === todayDd && (p?._md?.monthIndex0 ?? -1) === todayMm - 1);
+  }, [birthdaysThisMonth, now]);
+
+  // Seleção visual de posters (2 cards rodando)
+  const birthdayShow = useMemo(() => {
+    const base = birthdaysToday.length ? birthdaysToday : birthdaysThisMonth;
+    if (!base.length) return [];
+    const idx = Math.floor((now.getTime() / 1000 / 8) % base.length);
+    const a = base[idx];
+    const b = base[(idx + 1) % base.length];
+    return base.length === 1 ? [a] : [a, b];
+  }, [birthdaysToday, birthdaysThisMonth, now]);
+
+  const arrivalsShow = useMemo(() => {
+    const base = welcomePosters;
+    if (!base.length) return [];
+    const idx = Math.floor((now.getTime() / 1000 / 10) % base.length);
+    const a = base[idx];
+    const b = base[(idx + 1) % base.length];
+    return base.length === 1 ? [a] : [a, b];
+  }, [welcomePosters, now]);
+
+  // ====== UI helpers
+  function Logo() {
     return (
-      // eslint-disable-next-line @next/next/no-img-element
-      <img
-        src={src}
-        alt={alt}
-        style={{
-          height: 26,
-          width: "auto",
-          display: "block",
-          filter: "drop-shadow(0 10px 24px rgba(0,0,0,0.35))",
-        }}
-        onError={(e) => {
-          (e.currentTarget as HTMLImageElement).style.display = "none";
-        }}
-      />
+      <div className="tg-logoWrap">
+        <div className="tg-logoBlob">
+          {groupLogoSrc ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img className="tg-logoImg" src={groupLogoSrc} alt="T.Group" />
+          ) : (
+            <div className="tg-logoFallback" />
+          )}
+        </div>
+        <div className="tg-brandText">
+          <div className="tg-brandName">T.Group</div>
+          <div className="tg-brandSub">TV Signage • {locationLabel}</div>
+        </div>
+      </div>
     );
   }
 
-  const groupLogo =
-    CFG?.logos?.tgroup ||
-    CFG?.tgroupLogo ||
-    CFG?.logoSrc ||
-    CFG?.groupLogo ||
-    undefined;
+  function TopNav() {
+    return (
+      <div className="tg-topbar">
+        <Logo />
 
-  const brandTabs = Array.isArray(CFG.brandTabs) ? CFG.brandTabs : [];
-
-  // weather premium (arrays)
-  const hourly = Array.isArray(weather?.hourly) ? weather!.hourly!.slice(0, 8) : [];
-  const daily = Array.isArray(weather?.daily) ? weather!.daily!.slice(0, 6) : [];
-
-  return (
-    <div className="tg_root">
-      <div className="tg_backdrop" />
-
-      {/* TOP HUD */}
-      <div className="tg_top">
-        <div className="tg_brand">
-          <div className="tg_mark">
-            <Logo src={groupLogo} alt="T.Group" />
-            {!groupLogo ? <div className="tg_fallbackMark">T</div> : null}
-          </div>
-          <div className="tg_brandText">
-            <div className="tg_company">{CFG.companyName || "T.Group"}</div>
-            <div className="tg_sub">TV Signage • {locationLine}</div>
-          </div>
-        </div>
-
-        <div className="tg_tabs">
-          {brandTabs.map((b: any) => (
-            <div key={b.id || b.label} className="tg_tab">
-              <Logo src={b.logo} alt={b.label || "Brand"} />
-              <span>{b.label}</span>
+        <div className="tg-tabs" aria-label="T.Group companies">
+          {brandTabs.map((b) => (
+            <div key={b.key} className="tg-tab">
+              {b.label}
             </div>
           ))}
         </div>
 
-        <div className="tg_clock">
-          <div className="tg_time">{formatTimePtBR(now)}</div>
-          <div className="tg_date">{formatDatePtBR(now)}</div>
+        <div className="tg-clock">
+          <div className="tg-time">{topRightTime}</div>
+          <div className="tg-date">{formatDatePt(now)}</div>
         </div>
       </div>
+    );
+  }
 
-      {/* TV actions */}
-      {tvMode ? (
-        <div className="tg_tvHud">
-          <div className="tg_pill">
-            TV • {formatTimePtBR(now)} • Sync {lastSync ? formatTimePtBR(lastSync) : "—"}
-          </div>
-          <button className="tg_btn" onClick={onEnterFullscreen} type="button">
-            Tela cheia
-          </button>
+  function Ticker() {
+    const items = news.slice(0, 12).map((n) => n.title).filter(Boolean);
+    const text = items.length ? items.join("  •  ") : (newsErr ? "Sem atualização de notícias agora." : "Carregando notícias…");
+
+    return (
+      <div className="tg-ticker">
+        <div className="tg-livePill">
+          <span className="tg-liveDot" />
+          <span>AO VIVO</span>
         </div>
-      ) : null}
 
-      {/* STAGE */}
-      <div className="tg_stage">
-        {/* Scene 0: Welcome premium */}
-        <div className={`tg_scene ${scene === 0 ? "isActive" : ""}`}>
-          <div className="tg_sceneInner">
-            <div className="tg_bigTitle">Bem-vindas, vindes e vindos ao T.Group</div>
-
-            <div className="tg_bigSub">
-              {locationLine} • {weather ? `Clima agora: ${tempLabel}` : "Painel ao vivo"}
-            </div>
-
-            <div className="tg_manifesto">
-              <div className="tg_manifestoChip">Sobre a gente</div>
-              <div className="tg_manifestoLine">{manifestoLines[manifestoIndex] || manifestoLines[0]}</div>
-            </div>
+        <div className="tg-marquee" style={{ ["--tgMarqueeDuration" as any]: `${tickerDurationSec}s` }}>
+          <div className="tg-marqueeInner">{text}</div>
+          <div className="tg-marqueeInner" aria-hidden="true">
+            {text}
           </div>
         </div>
 
-        {/* Scene 1: Birthdays */}
-        <div className={`tg_scene ${scene === 1 ? "isActive" : ""}`}>
-          <div className="tg_sceneInner">
-            <div className="tg_bigTitle">
-              {birthdaysToday.length ? "Aniversários de hoje" : `Aniversários de ${formatMonthPtBR(monthIndex)}`}
-            </div>
+        <div className="tg-rightPills">
+          <div className="tg-pill">{tempNow !== undefined ? `${tempNow}°C` : "—"}</div>
+          <div className="tg-pill">{String(cfg?.locationShort || "Sede • Perdizes")}</div>
+        </div>
+      </div>
+    );
+  }
 
-            {birthdaysToday.length ? (
-              <div className="tg_bdayGrid">
-                {birthdaysToday.slice(0, 6).map((p, i) => (
-                  <div key={`${p.src}-${i}`} className="tg_bdayCard">
-                    <div className="tg_bdayBg" />
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img className="tg_bdayImg" src={p.src} alt={p.label || "Aniversariante"} />
-                    {p.label ? <div className="tg_bdayCaption">{p.label}</div> : null}
-                  </div>
-                ))}
+  // ====== Screens
+  function ScreenWelcome() {
+    const mission =
+      String(cfg?.mission || "Criar experiências memoráveis em entretenimento, eventos e live marketing, com excelência na execução.").trim();
+    const vision =
+      String(cfg?.vision || "Ser referência em entretenimento e live marketing com performance e tecnologia.").trim();
+    const values =
+      (Array.isArray(cfg?.values) ? cfg.values : null) ||
+      [
+        "Respeito, diversidade e segurança",
+        "Excelência com leveza",
+        "Dono(a) do resultado",
+        "Criatividade que vira entrega",
+        "Transparência e colaboração",
+      ];
+
+    return (
+      <div className="tg-stage">
+        <div className="tg-hero">
+          <div className="tg-heroTitleWrap">
+            <h1 className={clampTitleClass()}>Bem-vindas, vindes e vindos ao T.Group</h1>
+            <div className="tg-heroSub">
+              {locationLabel} • Clima agora: {tempNow !== undefined ? `${tempNow}°C` : "—"}
+            </div>
+          </div>
+
+          <div className="tg-panel">
+            <div className="tg-panelKicker">SOBRE A GENTE</div>
+
+            <div className="tg-mvvGrid">
+              <div className="tg-mvvBlock">
+                <div className="tg-mvvLabel">Missão</div>
+                <div className="tg-mvvText">{mission}</div>
               </div>
-            ) : birthdaysThisMonth.length ? (
-              <div className="tg_bdayMonth">
-                <div className="tg_bdayPair">
-                  {monthCarouselPair.map((p, i) => (
-                    <div key={`${p.src}-${i}`} className="tg_bdayCard tg_bdayCardSmall">
-                      <div className="tg_bdayBg" />
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img className="tg_bdayImg" src={p.src} alt={p.label || "Aniversariante do mês"} />
-                      {p.label ? <div className="tg_bdayCaption">{p.label}</div> : null}
-                    </div>
+
+              <div className="tg-mvvBlock">
+                <div className="tg-mvvLabel">Visão</div>
+                <div className="tg-mvvText">{vision}</div>
+              </div>
+
+              <div className="tg-mvvBlock">
+                <div className="tg-mvvLabel">Valores</div>
+                <ul className="tg-mvvList">
+                  {values.slice(0, 6).map((v: string) => (
+                    <li key={v}>{v}</li>
                   ))}
-                </div>
+                </ul>
+              </div>
+            </div>
+          </div>
 
-                <div className="tg_bdayList">
-                  <div className="tg_bdayListTitle">Lista do mês</div>
-                  <div className="tg_bdayListItems">
-                    {birthdaysThisMonth.slice(0, 12).map((p, idx) => (
-                      <div key={`${p.src}-${idx}`} className="tg_bdayListRow">
-                        <span className="tg_dot" />
-                        <span className="tg_bdayListName">{p.label || "Aniversariante"}</span>
-                      </div>
-                    ))}
+          {/* sem “dicas” na tela */}
+        </div>
+      </div>
+    );
+  }
+
+  function ScreenBirthdays() {
+    const title = `Aniversários de ${monthNamePt(monthIndex0)}`;
+
+    return (
+      <div className="tg-stage">
+        <div className="tg-titleRow">
+          <h1 className="tg-h1">{title}</h1>
+        </div>
+
+        <div className="tg-bdaysGrid">
+          <div className="tg-bdaysPosters">
+            {birthdayShow.length ? (
+              birthdayShow.map((p: any, idx: number) => (
+                <div key={`${p.src}-${idx}`} className="tg-posterCard">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img className="tg-posterImg" src={p.src} alt={String(p.label || "Aniversariante")} />
+                  <div className="tg-posterCaption">
+                    {String(p.label || "").trim() || "Aniversariante"}
                   </div>
                 </div>
-              </div>
+              ))
             ) : (
-              <div className="tg_placeholder">
-                <div className="tg_bigSub">Sem aniversariantes configurados para este mês ainda.</div>
+              <div className="tg-emptyCard">
+                <div className="tg-emptyTitle">Sem aniversariantes cadastrados</div>
+                <div className="tg-emptySub">Adicione em <code>public/signage/birthdays</code> e atualize o <code>birthdayPosters</code> no config.</div>
               </div>
             )}
           </div>
-        </div>
 
-        {/* Scene 2: Weather premium */}
-        <div className={`tg_scene ${scene === 2 ? "isActive" : ""}`}>
-          <div className="tg_sceneInner">
-            <div className="tg_bigTitle">Clima</div>
+          <div className="tg-bdaysList">
+            <div className="tg-listTitle">Lista do mês</div>
 
-            <div className="tg_weatherTop">
-              <div className="tg_weatherNow">
-                <div className="tg_weatherIcon">{weather?.emoji || "⛅️"}</div>
-                <div className="tg_weatherMeta">
-                  <div className="tg_weatherTemp">{tempLabel}</div>
-                  <div className="tg_weatherDesc">{weather?.description || weather?.condition || "São Paulo"}</div>
-                </div>
-              </div>
-
-              <div className="tg_weatherRight">
-                <div className="tg_weatherRightTitle">Próximos dias</div>
-                <div className="tg_weatherDaily">
-                  {(daily.length ? daily : new Array(5).fill(null)).slice(0, 5).map((d: any, idx) => {
-                    const label =
-                      d?.date
-                        ? new Intl.DateTimeFormat("pt-BR", { weekday: "short", day: "2-digit" }).format(new Date(d.date))
-                        : ["seg", "ter", "qua", "qui", "sex"][idx] || "—";
-                    const min = d?.minC != null ? `${Math.round(d.minC)}°` : "—";
-                    const max = d?.maxC != null ? `${Math.round(d.maxC)}°` : "—";
-                    return (
-                      <div key={idx} className="tg_day">
-                        <div className="tg_dayTop">
-                          <span className="tg_dayLabel">{label}</span>
-                          <span className="tg_dayEmoji">{d?.emoji || "⛅️"}</span>
-                        </div>
-                        <div className="tg_dayTemps">
-                          <span className="tg_min">{min}</span>
-                          <span className="tg_bar" />
-                          <span className="tg_max">{max}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            <div className="tg_weatherBottom">
-              <div className="tg_weatherRightTitle">Hoje (próximas horas)</div>
-              <div className="tg_hourly">
-                {(hourly.length ? hourly : new Array(8).fill(null)).slice(0, 8).map((h: any, idx) => {
-                  const t =
-                    h?.time
-                      ? new Intl.DateTimeFormat("pt-BR", { hour: "2-digit", minute: "2-digit" }).format(new Date(h.time))
-                      : `${pad2((now.getHours() + idx) % 24)}:00`;
-
-                  const tC = Number(h?.tempC ?? h?.temp ?? h?.temperature ?? NaN);
-                  const lab = Number.isFinite(tC) ? `${Math.round(tC)}°` : "—";
+            <div className="tg-listWrap">
+              {birthdaysThisMonth.length ? (
+                birthdaysThisMonth.map((p: any) => {
+                  const md = p._md as { monthIndex0: number; day: number } | null;
+                  const day = md?.day;
+                  const mName = md ? monthNamePt(md.monthIndex0) : "";
+                  const { name, meta } = splitLabel(p._label || p.label || "");
+                  const metaFinal = meta || p._meta || ""; // meta = “Facilities • T.Group”
+                  const row =
+                    day
+                      ? `${name} — ${day} de ${mName}${metaFinal ? ` — ${metaFinal}` : ""}`
+                      : `${name}${metaFinal ? ` — ${metaFinal}` : ""}`;
 
                   return (
-                    <div key={idx} className="tg_hour">
-                      <div className="tg_hourTime">{t}</div>
-                      <div className="tg_hourEmoji">{h?.emoji || "⛅️"}</div>
-                      <div className="tg_hourTemp">{lab}</div>
+                    <div key={String(p.src || p._label)} className="tg-listItem">
+                      <span className="tg-dot" />
+                      <span className="tg-listText">{row}</span>
                     </div>
                   );
-                })}
-              </div>
+                })
+              ) : (
+                <div className="tg-muted">Sem itens neste mês.</div>
+              )}
             </div>
           </div>
         </div>
+      </div>
+    );
+  }
 
-        {/* Scene 3: News */}
-        <div className={`tg_scene ${scene === 3 ? "isActive" : ""}`}>
-          <div className="tg_sceneInner">
-            <div className="tg_bigTitle">News</div>
+  function ScreenNews() {
+    const items = news.slice(0, 6);
 
-            <div className="tg_newsGrid">
-              {(news.length ? news : [{ title: "Carregando notícias…", source: "—" }]).slice(0, 8).map((it, i) => {
-                const domain = domainFromUrl(it.url) || (it.source ? String(it.source) : "");
-                const fav = faviconFor(domain);
+    return (
+      <div className="tg-stage">
+        <div className="tg-titleRow">
+          <h1 className="tg-h1">News</h1>
+        </div>
+
+        <div className="tg-newsGrid">
+          {items.map((it, idx) => {
+            const fav = faviconFrom(it);
+
+            return (
+              <div key={`${it.title}-${idx}`} className="tg-newsCard">
+                <div className="tg-newsLeft">
+                  {it.image ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="tg-newsThumb" src={it.image} alt="" />
+                  ) : (
+                    <div className="tg-newsThumb tg-newsThumbFallback" />
+                  )}
+
+                  {fav ? (
+                    // eslint-disable-next-line @next/next/no-img-element
+                    <img className="tg-newsFavicon" src={fav} alt="" />
+                  ) : (
+                    <div className="tg-newsFaviconFallback">
+                      {(it.source || "N").slice(0, 1).toUpperCase()}
+                    </div>
+                  )}
+                </div>
+
+                <div className="tg-newsBody">
+                  <div className="tg-newsTitle">{it.title}</div>
+                  <div className="tg-newsSource">{String(it.source || "").toLowerCase() || "portal"}</div>
+                </div>
+              </div>
+            );
+          })}
+
+          {!items.length && (
+            <div className="tg-emptyCard">
+              <div className="tg-emptyTitle">Carregando news…</div>
+              <div className="tg-emptySub">Se necessário, valide o endpoint <code>/api/news</code>.</div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  function ScreenWeather() {
+    // Próximos dias: pega 5
+    const days = daily.slice(0, 5);
+
+    // Próximas horas: filtra a partir de agora
+    const nextHours = (() => {
+      if (!hourly.length) return [];
+      const nowTs = now.getTime();
+      const future = hourly
+        .map((h) => ({ ...h, _ts: new Date(h.time).getTime() }))
+        .filter((h) => Number.isFinite(h._ts) && h._ts >= nowTs)
+        .slice(0, 8);
+      return future;
+    })();
+
+    return (
+      <div className="tg-stage">
+        <div className="tg-titleRow">
+          <h1 className="tg-h1">Clima</h1>
+        </div>
+
+        <div className="tg-weatherGrid">
+          <div className="tg-weatherNow">
+            <div className="tg-weatherNowInner">
+              <div className="tg-weatherEmoji">{current?.emoji || "⛅️"}</div>
+              <div className="tg-weatherTemp">{tempNow !== undefined ? `${tempNow}°C` : "—"}</div>
+              <div className="tg-weatherDesc">{current?.description || "São Paulo"}</div>
+            </div>
+          </div>
+
+          <div className="tg-weatherDays">
+            <div className="tg-miniTitle">Próximos dias</div>
+            <div className="tg-daysRow">
+              {days.map((d, idx) => {
+                const dt = new Date(`${d.date}T12:00:00-03:00`);
+                const dow = weekdayShortPt(dt);
+                const max = safeNumber(d.maxC);
+                const min = safeNumber(d.minC);
 
                 return (
-                  <div key={`${it.title}-${i}`} className="tg_newsCard">
-                    <div className="tg_newsMedia">
-                      <div className="tg_newsMediaBg" />
-                      {/* fallback favicon */}
-                      {fav ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          className="tg_newsFavicon"
-                          src={fav}
-                          alt={domain || "site"}
-                          onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
-                        />
-                      ) : null}
-
-                      {/* thumbnail se existir */}
-                      {it.image ? (
-                        // eslint-disable-next-line @next/next/no-img-element
-                        <img
-                          className="tg_newsThumb"
-                          src={it.image}
-                          alt={it.title}
-                          onError={(e) => ((e.currentTarget as HTMLImageElement).style.display = "none")}
-                        />
-                      ) : null}
-                    </div>
-
-                    <div className="tg_newsBody">
-                      <div className="tg_newsTitle">{it.title}</div>
-                      <div className="tg_newsMeta">{it.source || domain || "—"}</div>
+                  <div key={`${d.date}-${idx}`} className="tg-dayCard">
+                    <div className="tg-dayDow">{dow}</div>
+                    <div className="tg-dayEmoji">{d.emoji || "⛅️"}</div>
+                    <div className="tg-dayTemps">
+                      <span>{max !== undefined ? `${Math.round(max)}°` : "—"}</span>
+                      <span className="tg-daySep">/</span>
+                      <span className="tg-dayMin">{min !== undefined ? `${Math.round(min)}°` : "—"}</span>
                     </div>
                   </div>
                 );
               })}
+
+              {!days.length && (
+                <div className="tg-muted">Sem previsão diária (verifique o /api/weather).</div>
+              )}
             </div>
           </div>
-        </div>
 
-        {/* Scene 4: Chegadas do mês */}
-        {hasWelcomersThisMonth ? (
-          <div className={`tg_scene ${scene === 4 ? "isActive" : ""}`}>
-            <div className="tg_sceneInner tg_welcome">
-              <div className="tg_welcomeHeader">
-                <div className="tg_welcomeTitle">Chegadas do mês</div>
-                <div className="tg_welcomeSub">{formatMonthPtBR(monthIndex)} • nova energia no ar ✨</div>
-              </div>
+          <div className="tg-weatherHours">
+            <div className="tg-miniTitle">Hoje (próximas horas)</div>
+            <div className="tg-hoursRow">
+              {nextHours.map((h: any, idx: number) => {
+                const dt = new Date(h.time);
+                const label = `${pad2(dt.getHours())}:00`;
+                const t = safeNumber(h.tempC);
 
-              <div
-                className="tg_welcomeGrid"
-                style={{
-                  gridTemplateColumns: `repeat(${Math.min(4, Math.max(2, welcomeCards.length))}, minmax(0, 1fr))`,
-                }}
-              >
-                {welcomeCards.map((c, idx) => (
-                  <div key={`${c.src}-${idx}`} className="tg_welcomeCard" style={{ animationDelay: `${idx * 160}ms` }}>
-                    <div className="tg_welcomeGlow" />
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img className="tg_welcomeImg" src={c.src} alt={c.label || "Chegada do mês"} />
-                    {c.label ? <div className="tg_welcomeCaption">{c.label}</div> : null}
+                return (
+                  <div key={`${h.time}-${idx}`} className="tg-hourCard">
+                    <div className="tg-hourTime">{label}</div>
+                    <div className="tg-hourEmoji">{h.emoji || "⛅️"}</div>
+                    <div className="tg-hourTemp">{t !== undefined ? `${Math.round(t)}°` : "—"}</div>
                   </div>
-                ))}
-              </div>
+                );
+              })}
 
-              {/* pedido: remover dicas */}
+              {!nextHours.length && (
+                <div className="tg-muted">Sem previsão por hora (verifique o /api/weather).</div>
+              )}
             </div>
-          </div>
-        ) : null}
-      </div>
-
-      {/* Footer premium */}
-      <div className="tg_bottom">
-        <div className="tg_footer">
-          <div className="tg_live">
-            <span className="tg_liveDot" />
-            <span className="tg_liveTxt">AO VIVO</span>
-          </div>
-
-          <div className="tg_ticker" style={{ ["--marqueeDur" as any]: `${marqueeDurationSec}s` }}>
-            <div className="tg_tickerTrack">
-              <span>{tickerText}</span>
-              <span>{tickerText}</span>
-            </div>
-            <div className="tg_tickerFade tg_leftFade" />
-            <div className="tg_tickerFade tg_rightFade" />
-          </div>
-
-          <div className="tg_footerMeta">
-            <span className="tg_metaChip">{tempLabel}</span>
-            <span className="tg_metaChip">{locationLine}</span>
           </div>
         </div>
       </div>
+    );
+  }
 
+  function ScreenArrivals() {
+    return (
+      <div className="tg-stage">
+        <div className="tg-titleRow tg-titleRowSplit">
+          <h1 className="tg-h1">Chegadas do mês</h1>
+          <div className="tg-smallRight">fevereiro • nova energia no ar ✨</div>
+        </div>
+
+        <div className="tg-arrivalsGrid">
+          {arrivalsShow.length ? (
+            arrivalsShow.map((p: any, idx: number) => (
+              <div key={`${p.src}-${idx}`} className="tg-posterCard tg-posterWide">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img className="tg-posterImg" src={p.src} alt={String(p.label || "Chegada do mês")} />
+                <div className="tg-posterCaption">{String(p.label || "").trim()}</div>
+              </div>
+            ))
+          ) : (
+            <div className="tg-emptyCard">
+              <div className="tg-emptyTitle">Sem artes cadastradas</div>
+              <div className="tg-emptySub">Suba em <code>public/signage/welcome</code> e atualize o <code>welcomePosters</code> no config.</div>
+            </div>
+          )}
+        </div>
+
+        {/* sem “dicas” na tela */}
+      </div>
+    );
+  }
+
+  return (
+    <div className="tg-root">
+      <TopNav />
+
+      <div className="tg-content">
+        {screen === "welcome" && <ScreenWelcome />}
+        {screen === "birthdays" && <ScreenBirthdays />}
+        {screen === "weather" && <ScreenWeather />}
+        {screen === "news" && <ScreenNews />}
+        {screen === "arrivals" && <ScreenArrivals />}
+      </div>
+
+      <Ticker />
+
+      {/* Player de música (mantido) */}
       <MusicDock />
 
       <style jsx global>{`
-        .tg_root {
-          position: relative;
+        :root {
+          --tg-glass: rgba(255, 255, 255, 0.08);
+          --tg-glass-2: rgba(255, 255, 255, 0.10);
+          --tg-border: rgba(255, 255, 255, 0.14);
+          --tg-text: rgba(255, 255, 255, 0.92);
+          --tg-muted: rgba(255, 255, 255, 0.70);
+          --tg-dim: rgba(255, 255, 255, 0.55);
+          --tg-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+          --tg-radius: 28px;
+        }
+
+        .tg-root {
           min-height: 100vh;
-          width: 100%;
+          color: var(--tg-text);
           overflow: hidden;
-          background: #07090f;
-          color: #fff;
-          font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
-        }
-
-        /* BACKDROP */
-        .tg_backdrop {
-          position: absolute;
-          inset: -40%;
-          background:
-            radial-gradient(60% 50% at 20% 20%, rgba(64, 120, 255, 0.35), transparent 60%),
-            radial-gradient(55% 45% at 70% 25%, rgba(20, 240, 220, 0.25), transparent 60%),
-            radial-gradient(60% 55% at 70% 70%, rgba(255, 60, 60, 0.25), transparent 60%),
-            radial-gradient(40% 50% at 30% 70%, rgba(160, 120, 255, 0.18), transparent 60%),
-            linear-gradient(180deg, rgba(0,0,0,0.15), rgba(0,0,0,0.85));
-          filter: blur(28px) saturate(115%);
-          animation: tg_drift 18s ease-in-out infinite alternate;
-        }
-        @keyframes tg_drift {
-          from { transform: translate3d(-1%, -1%, 0) scale(1.02); }
-          to   { transform: translate3d( 1%,  1%, 0) scale(1.04); }
-        }
-
-        /* TOP HUD */
-        .tg_top {
           position: relative;
-          z-index: 20;
+          background: #070a12;
+        }
+
+        /* Fundo mais vibrante, sem “preto chapado” */
+        .tg-root::before {
+          content: "";
+          position: absolute;
+          inset: -25%;
+          background:
+            radial-gradient(900px 600px at 18% 22%, rgba(82, 138, 255, 0.30), transparent 60%),
+            radial-gradient(800px 520px at 74% 24%, rgba(64, 255, 197, 0.22), transparent 58%),
+            radial-gradient(900px 640px at 64% 78%, rgba(255, 64, 164, 0.20), transparent 60%),
+            radial-gradient(900px 680px at 20% 86%, rgba(255, 122, 48, 0.18), transparent 62%),
+            linear-gradient(180deg, rgba(0, 0, 0, 0.25), rgba(0, 0, 0, 0.55));
+          filter: saturate(1.25) brightness(1.05);
+          transform: translateZ(0);
+          animation: tgDrift 18s ease-in-out infinite alternate;
+          pointer-events: none;
+        }
+
+        @keyframes tgDrift {
+          from { transform: translate3d(-0.8%, -0.6%, 0) scale(1.02); }
+          to   { transform: translate3d(0.8%, 0.6%, 0) scale(1.06); }
+        }
+
+        .tg-root > * {
+          position: relative;
+          z-index: 1;
+        }
+
+        .tg-topbar {
           display: grid;
           grid-template-columns: 1fr auto 1fr;
           align-items: center;
           gap: 18px;
-          padding: 24px 28px;
+          padding: 20px 28px 14px;
         }
 
-        .tg_brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
-        .tg_mark {
-          height: 44px; width: 44px;
-          border-radius: 16px;
-          background: rgba(255,255,255,0.08);
-          border: 1px solid rgba(255,255,255,0.12);
-          display: grid; place-items: center;
-          overflow: hidden;
-          box-shadow: 0 24px 80px rgba(0,0,0,0.45);
-        }
-        .tg_fallbackMark { font-weight: 900; font-size: 18px; opacity: 0.9; }
-        .tg_brandText { min-width: 0; }
-        .tg_company { font-weight: 900; letter-spacing: -0.02em; font-size: 18px; }
-        .tg_sub { opacity: 0.7; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-
-        .tg_tabs { display: flex; gap: 10px; justify-content: center; }
-        .tg_tab {
-          display: flex; align-items: center; gap: 8px;
-          padding: 8px 12px;
-          border-radius: 999px;
-          background: rgba(0,0,0,0.25);
-          border: 1px solid rgba(255,255,255,0.10);
-          backdrop-filter: blur(10px);
-          font-size: 11px;
-          letter-spacing: 0.20em;
-          text-transform: uppercase;
-          opacity: 0.9;
-        }
-        .tg_tab img { height: 16px; }
-
-        .tg_clock { text-align: right; }
-        .tg_time { font-size: 54px; font-weight: 950; letter-spacing: -0.04em; line-height: 1; }
-        .tg_date { opacity: 0.75; font-size: 14px; text-transform: lowercase; }
-
-        /* TV HUD */
-        .tg_tvHud {
-          position: absolute;
-          top: 92px;
-          right: 28px;
-          z-index: 25;
+        .tg-logoWrap {
           display: flex;
           align-items: center;
-          gap: 10px;
+          gap: 14px;
         }
-        .tg_pill {
-          padding: 10px 12px;
-          border-radius: 999px;
-          background: rgba(0,0,0,0.45);
-          border: 1px solid rgba(255,255,255,0.12);
-          font-size: 12px;
-          opacity: 0.9;
-          backdrop-filter: blur(10px);
-        }
-        .tg_btn {
-          padding: 10px 12px;
+
+        .tg-logoBlob {
+          width: 44px;
+          height: 44px;
           border-radius: 14px;
-          background: rgba(255,255,255,0.92);
-          color: #111;
-          border: none;
-          font-weight: 950;
-          cursor: pointer;
-        }
-
-        /* STAGE + SCENES */
-        .tg_stage {
-          position: relative;
-          z-index: 10;
-          margin: 0 28px;
-          border-radius: 28px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(0,0,0,0.35);
-          backdrop-filter: blur(18px);
-          box-shadow: 0 30px 120px rgba(0,0,0,0.55);
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          box-shadow: 0 10px 30px rgba(0,0,0,0.25);
           overflow: hidden;
-          min-height: 64vh;
+          display: grid;
+          place-items: center;
         }
 
-        .tg_scene {
-          position: absolute;
-          inset: 0;
-          opacity: 0;
-          transform: scale(1.01);
-          transition: opacity 700ms ease, transform 700ms ease;
-          display: flex;
-        }
-        .tg_scene.isActive {
-          opacity: 1;
-          transform: scale(1.00);
-        }
-
-        .tg_sceneInner {
-          padding: 34px;
+        .tg-logoImg {
           width: 100%;
+          height: 100%;
+          object-fit: cover;
         }
 
-        .tg_bigTitle {
-          font-size: 68px;
-          font-weight: 980;
-          letter-spacing: -0.05em;
-          line-height: 0.95;
-          text-shadow: 0 24px 70px rgba(0,0,0,0.55);
+        .tg-logoFallback {
+          width: 18px;
+          height: 18px;
+          border-radius: 8px;
+          background: rgba(255, 255, 255, 0.16);
         }
 
-        .tg_bigSub {
-          margin-top: 10px;
-          font-size: 16px;
-          opacity: 0.82;
-          max-width: 1050px;
+        .tg-brandText .tg-brandName {
+          font-weight: 800;
+          letter-spacing: -0.02em;
+          font-size: 18px;
+          line-height: 1.0;
         }
 
-        /* Home manifesto */
-        .tg_manifesto {
-          margin-top: 22px;
-          max-width: 1100px;
-          border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          padding: 18px 18px;
-          box-shadow: 0 26px 110px rgba(0,0,0,0.45);
+        .tg-brandText .tg-brandSub {
+          font-size: 13px;
+          color: var(--tg-muted);
+          margin-top: 3px;
         }
-        .tg_manifestoChip {
-          display: inline-flex;
-          align-items: center;
+
+        .tg-tabs {
+          display: flex;
           gap: 10px;
+          justify-content: center;
+          align-items: center;
+        }
+
+        .tg-tab {
+          padding: 9px 14px;
+          border-radius: 999px;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(0, 0, 0, 0.22);
+          backdrop-filter: blur(16px);
+          font-size: 12px;
+          letter-spacing: 0.12em;
+          color: rgba(255, 255, 255, 0.88);
+        }
+
+        .tg-clock {
+          display: flex;
+          flex-direction: column;
+          align-items: flex-end;
+          gap: 6px;
+        }
+
+        .tg-time {
+          font-size: 56px;
+          font-weight: 900;
+          letter-spacing: -0.05em;
+          line-height: 1;
+        }
+
+        .tg-date {
+          font-size: 14px;
+          color: rgba(255, 255, 255, 0.78);
+          text-align: right;
+        }
+
+        .tg-content {
+          padding: 0 28px;
+        }
+
+        .tg-stage {
+          border-radius: var(--tg-radius);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(0, 0, 0, 0.22);
+          box-shadow: var(--tg-shadow);
+          backdrop-filter: blur(18px);
+          padding: 26px;
+          min-height: calc(100vh - 170px);
+        }
+
+        .tg-titleRow {
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 16px;
+          margin-bottom: 18px;
+        }
+
+        .tg-titleRowSplit {
+          align-items: center;
+        }
+
+        .tg-h1 {
+          font-size: clamp(46px, 4.6vw, 74px);
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          margin: 0;
+          line-height: 0.98;
+        }
+
+        .tg-smallRight {
+          color: rgba(255, 255, 255, 0.72);
+          font-size: 14px;
+          white-space: nowrap;
+        }
+
+        /* Welcome */
+        .tg-hero {
+          display: grid;
+          grid-template-rows: auto 1fr;
+          gap: 18px;
+        }
+
+        .tg-heroTitleWrap {
+          padding-top: 6px;
+        }
+
+        .tg-title {
+          font-size: clamp(38px, 4.2vw, 68px);
+          font-weight: 900;
+          letter-spacing: -0.04em;
+          line-height: 1.02;
+          margin: 0;
+          max-width: 1200px;
+          text-wrap: balance;
+        }
+
+        .tg-heroSub {
+          margin-top: 10px;
+          color: rgba(255, 255, 255, 0.78);
+          font-size: 16px;
+        }
+
+        .tg-panel {
+          border-radius: 22px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 18px 18px 16px;
+          max-width: 1180px;
+        }
+
+        .tg-panelKicker {
+          display: inline-flex;
           padding: 8px 12px;
           border-radius: 999px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(0,0,0,0.32);
-          font-weight: 900;
-          letter-spacing: 0.18em;
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          background: rgba(0, 0, 0, 0.18);
           font-size: 11px;
-          text-transform: uppercase;
-          opacity: 0.92;
+          letter-spacing: 0.14em;
+          color: rgba(255, 255, 255, 0.78);
+          margin-bottom: 14px;
         }
-        .tg_manifestoLine {
-          margin-top: 12px;
-          font-size: 28px;
-          font-weight: 900;
-          letter-spacing: -0.03em;
-          opacity: 0.95;
+
+        .tg-mvvGrid {
+          display: grid;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
+          gap: 14px;
+        }
+
+        .tg-mvvBlock {
+          border-radius: 18px;
+          background: rgba(0, 0, 0, 0.18);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          padding: 14px 14px 12px;
+        }
+
+        .tg-mvvLabel {
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.78);
+          margin-bottom: 10px;
+          font-weight: 700;
+          letter-spacing: -0.01em;
+        }
+
+        .tg-mvvText {
+          font-size: 16px;
+          line-height: 1.35;
+          color: rgba(255, 255, 255, 0.90);
+          font-weight: 650;
+        }
+
+        .tg-mvvList {
+          margin: 0;
+          padding-left: 18px;
+          color: rgba(255, 255, 255, 0.88);
+          font-size: 15px;
+          line-height: 1.45;
+          font-weight: 600;
         }
 
         /* Birthdays */
-        .tg_bdayGrid {
-          margin-top: 18px;
+        .tg-bdaysGrid {
           display: grid;
-          grid-template-columns: repeat(3, minmax(0, 1fr));
-          gap: 16px;
+          grid-template-columns: 1.45fr 1fr;
+          gap: 18px;
+          height: 100%;
         }
 
-        .tg_bdayMonth {
-          margin-top: 18px;
-          display: grid;
-          grid-template-columns: 1.3fr 0.7fr;
-          gap: 16px;
-          align-items: stretch;
-        }
-
-        .tg_bdayPair {
+        .tg-bdaysPosters {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 16px;
+          gap: 14px;
+          align-content: start;
         }
 
-        .tg_bdayCard {
-          position: relative;
+        .tg-bdaysList {
           border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 16px;
+          height: fit-content;
+        }
+
+        .tg-listTitle {
+          font-size: 14px;
+          color: rgba(255, 255, 255, 0.78);
+          font-weight: 700;
+          margin-bottom: 12px;
+        }
+
+        .tg-listWrap {
+          display: grid;
+          gap: 10px;
+        }
+
+        .tg-listItem {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 12px 12px;
+          border-radius: 16px;
+          background: rgba(0, 0, 0, 0.20);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+        }
+
+        .tg-dot {
+          width: 10px;
+          height: 10px;
+          border-radius: 999px;
+          background: rgba(255, 255, 255, 0.85);
+          opacity: 0.9;
+        }
+
+        .tg-listText {
+          color: rgba(255, 255, 255, 0.90);
+          font-size: 15px;
+          font-weight: 650;
+        }
+
+        /* Posters (birthdays / arrivals) */
+        .tg-posterCard {
+          border-radius: 22px;
           overflow: hidden;
-          min-height: 34vh;
-          box-shadow: 0 34px 120px rgba(0,0,0,0.55);
-          backdrop-filter: blur(12px);
-        }
-        .tg_bdayCardSmall { min-height: 40vh; }
-
-        .tg_bdayBg {
-          position: absolute;
-          inset: -30%;
-          background:
-            radial-gradient(40% 35% at 20% 25%, rgba(120, 160, 255, 0.25), transparent 65%),
-            radial-gradient(40% 35% at 80% 30%, rgba(20, 240, 220, 0.18), transparent 65%),
-            radial-gradient(40% 35% at 70% 80%, rgba(255, 90, 90, 0.18), transparent 65%);
-          filter: blur(16px);
-          opacity: 0.85;
-          pointer-events: none;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          position: relative;
+          min-height: 340px;
         }
 
-        .tg_bdayImg {
-          position: absolute;
-          inset: 0;
+        .tg-posterWide {
+          min-height: 420px;
+        }
+
+        .tg-posterImg {
           width: 100%;
           height: 100%;
-          object-fit: contain; /* pedido: sem estourar/crop */
-          padding: 12px;
-          display: block;
+          object-fit: contain; /* evita “estourar” arte */
+          background: rgba(0, 0, 0, 0.25);
         }
 
-        .tg_bdayCaption {
+        .tg-posterCaption {
           position: absolute;
           left: 14px;
           right: 14px;
-          bottom: 12px;
+          bottom: 14px;
           padding: 10px 12px;
-          border-radius: 16px;
-          background: rgba(0,0,0,0.45);
-          border: 1px solid rgba(255,255,255,0.10);
-          backdrop-filter: blur(10px);
-          font-weight: 950;
-          letter-spacing: -0.01em;
+          border-radius: 999px;
+          background: rgba(0, 0, 0, 0.30);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          backdrop-filter: blur(14px);
+          font-weight: 700;
+          color: rgba(255, 255, 255, 0.92);
           font-size: 14px;
         }
 
-        .tg_bdayList {
-          border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(0,0,0,0.28);
-          padding: 16px;
-          overflow: hidden;
-        }
-        .tg_bdayListTitle {
-          font-weight: 950;
-          letter-spacing: -0.02em;
-          font-size: 16px;
-          opacity: 0.95;
-        }
-        .tg_bdayListItems {
-          margin-top: 12px;
-          display: grid;
-          gap: 10px;
-        }
-        .tg_bdayListRow {
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          padding: 10px 12px;
-          border-radius: 16px;
-          border: 1px solid rgba(255,255,255,0.10);
-          background: rgba(255,255,255,0.06);
-        }
-        .tg_dot {
-          height: 8px; width: 8px;
-          border-radius: 999px;
-          background: rgba(255,255,255,0.85);
-          box-shadow: 0 10px 30px rgba(0,0,0,0.45);
-          flex: 0 0 auto;
-        }
-        .tg_bdayListName { opacity: 0.95; }
-
-        .tg_placeholder {
-          margin-top: 18px;
-          padding: 18px;
-          border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          max-width: 980px;
-        }
-
-        /* Weather */
-        .tg_weatherTop {
-          margin-top: 14px;
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 16px;
-          align-items: stretch;
-        }
-
-        .tg_weatherNow {
-          border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          padding: 18px;
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          min-height: 22vh;
-          box-shadow: 0 34px 120px rgba(0,0,0,0.45);
-        }
-        .tg_weatherIcon {
-          font-size: 70px;
-          filter: drop-shadow(0 18px 40px rgba(0,0,0,0.5));
-        }
-        .tg_weatherTemp {
-          font-size: 66px;
-          font-weight: 980;
-          letter-spacing: -0.04em;
-          line-height: 1;
-        }
-        .tg_weatherDesc {
-          margin-top: 6px;
-          opacity: 0.82;
-          font-size: 16px;
-        }
-
-        .tg_weatherRight {
-          border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(0,0,0,0.28);
-          padding: 18px;
-          box-shadow: 0 34px 120px rgba(0,0,0,0.45);
-        }
-
-        .tg_weatherRightTitle {
-          font-weight: 950;
-          letter-spacing: -0.02em;
-          font-size: 16px;
-          opacity: 0.95;
-        }
-
-        .tg_weatherDaily {
-          margin-top: 12px;
-          display: grid;
-          grid-template-columns: repeat(5, minmax(0, 1fr));
-          gap: 10px;
-        }
-
-        .tg_day {
-          border-radius: 18px;
-          border: 1px solid rgba(255,255,255,0.10);
-          background: rgba(255,255,255,0.06);
-          padding: 12px;
-        }
-
-        .tg_dayTop {
-          display: flex;
-          align-items: center;
-          justify-content: space-between;
-          gap: 8px;
-        }
-        .tg_dayLabel { opacity: 0.9; font-weight: 900; text-transform: lowercase; }
-        .tg_dayEmoji { font-size: 18px; }
-
-        .tg_dayTemps {
-          margin-top: 10px;
-          display: flex;
-          align-items: center;
-          gap: 10px;
-          font-weight: 950;
-        }
-        .tg_min { opacity: 0.82; }
-        .tg_max { opacity: 0.98; }
-        .tg_bar {
-          flex: 1 1 auto;
-          height: 2px;
-          border-radius: 999px;
-          background: rgba(255,255,255,0.18);
-        }
-
-        .tg_weatherBottom {
-          margin-top: 16px;
-          border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          padding: 16px;
-          box-shadow: 0 34px 120px rgba(0,0,0,0.35);
-        }
-
-        .tg_hourly {
-          margin-top: 12px;
-          display: grid;
-          grid-template-columns: repeat(8, minmax(0, 1fr));
-          gap: 10px;
-        }
-
-        .tg_hour {
-          border-radius: 18px;
-          border: 1px solid rgba(255,255,255,0.10);
-          background: rgba(0,0,0,0.25);
-          padding: 12px 10px;
-          text-align: center;
-        }
-        .tg_hourTime { opacity: 0.8; font-weight: 900; }
-        .tg_hourEmoji { margin-top: 6px; font-size: 20px; }
-        .tg_hourTemp { margin-top: 6px; font-weight: 980; font-size: 18px; }
-
         /* News */
-        .tg_newsGrid {
-          margin-top: 18px;
+        .tg-newsGrid {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
-          gap: 16px;
-          max-width: 1200px;
+          gap: 14px;
         }
-        .tg_newsCard {
+
+        .tg-newsCard {
           border-radius: 22px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
           overflow: hidden;
           display: grid;
-          grid-template-columns: 210px 1fr;
-          min-height: 120px;
+          grid-template-columns: 180px 1fr;
+          min-height: 140px;
         }
-        .tg_newsMedia {
+
+        .tg-newsLeft {
           position: relative;
-          overflow: hidden;
+          background: rgba(0, 0, 0, 0.22);
         }
-        .tg_newsMediaBg {
-          position: absolute;
-          inset: 0;
-          background: radial-gradient(70% 70% at 20% 30%, rgba(120,160,255,0.20), transparent 60%),
-                      radial-gradient(70% 70% at 80% 70%, rgba(255,90,90,0.18), transparent 60%),
-                      rgba(0,0,0,0.35);
-        }
-        .tg_newsFavicon {
-          position: absolute;
-          left: 16px;
-          top: 16px;
-          width: 28px;
-          height: 28px;
-          border-radius: 10px;
-          background: rgba(255,255,255,0.08);
-          border: 1px solid rgba(255,255,255,0.12);
-          padding: 6px;
-          backdrop-filter: blur(10px);
-          z-index: 2;
-        }
-        .tg_newsThumb {
+
+        .tg-newsThumb {
           position: absolute;
           inset: 0;
           width: 100%;
           height: 100%;
           object-fit: cover;
-          display: block;
-          z-index: 1;
+          opacity: 0.78;
+          filter: saturate(1.1);
         }
-        .tg_newsBody {
-          padding: 14px 16px;
+
+        .tg-newsThumbFallback {
+          background: radial-gradient(220px 160px at 40% 30%, rgba(255,255,255,0.14), transparent 62%);
+        }
+
+        .tg-newsFavicon,
+        .tg-newsFaviconFallback {
+          position: absolute;
+          top: 14px;
+          left: 14px;
+          width: 30px;
+          height: 30px;
+          border-radius: 10px;
+          background: rgba(0, 0, 0, 0.28);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          backdrop-filter: blur(10px);
+          display: grid;
+          place-items: center;
+          color: rgba(255,255,255,0.92);
+          font-weight: 900;
+          letter-spacing: -0.02em;
+        }
+
+        .tg-newsBody {
+          padding: 16px 16px 14px;
           display: grid;
           gap: 10px;
           align-content: center;
         }
-        .tg_newsTitle {
-          font-weight: 950;
-          letter-spacing: -0.02em;
+
+        .tg-newsTitle {
           font-size: 16px;
-          line-height: 1.2;
-          opacity: 0.96;
+          line-height: 1.25;
+          font-weight: 800;
+          letter-spacing: -0.02em;
+          color: rgba(255, 255, 255, 0.92);
         }
-        .tg_newsMeta {
-          opacity: 0.78;
-          font-size: 12px;
+
+        .tg-newsSource {
+          font-size: 13px;
+          color: rgba(255, 255, 255, 0.68);
           text-transform: lowercase;
         }
 
-        /* Welcome scene */
-        .tg_welcomeHeader {
-          display: flex;
-          align-items: baseline;
-          justify-content: space-between;
-          gap: 18px;
-          margin-bottom: 18px;
+        /* Weather */
+        .tg-weatherGrid {
+          display: grid;
+          grid-template-columns: 1.35fr 1fr;
+          grid-template-rows: auto 1fr;
+          gap: 14px;
         }
-        .tg_welcomeTitle {
-          font-size: 56px;
-          font-weight: 980;
+
+        .tg-weatherNow {
+          border-radius: 22px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 18px;
+          min-height: 180px;
+        }
+
+        .tg-weatherNowInner {
+          display: grid;
+          grid-template-columns: auto 1fr;
+          grid-template-rows: auto auto;
+          gap: 6px 14px;
+          align-items: center;
+        }
+
+        .tg-weatherEmoji {
+          grid-row: span 2;
+          font-size: 54px;
+          filter: drop-shadow(0 10px 18px rgba(0,0,0,0.35));
+        }
+
+        .tg-weatherTemp {
+          font-size: 60px;
+          font-weight: 900;
           letter-spacing: -0.05em;
           line-height: 1;
-          text-shadow: 0 24px 70px rgba(0,0,0,0.55);
-        }
-        .tg_welcomeSub {
-          opacity: 0.82;
-          font-size: 14px;
-          text-transform: lowercase;
-          white-space: nowrap;
         }
 
-        .tg_welcomeGrid {
+        .tg-weatherDesc {
+          font-size: 16px;
+          color: rgba(255, 255, 255, 0.78);
+          margin-top: 4px;
+        }
+
+        .tg-weatherDays {
+          border-radius: 22px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 16px;
+          min-height: 180px;
+        }
+
+        .tg-weatherHours {
+          grid-column: 1 / -1;
+          border-radius: 22px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 16px;
+        }
+
+        .tg-miniTitle {
+          font-size: 14px;
+          color: rgba(255, 255, 255, 0.78);
+          font-weight: 800;
+          margin-bottom: 12px;
+        }
+
+        .tg-daysRow {
           display: grid;
-          gap: 14px;
-          align-items: stretch;
-          margin-top: 10px;
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+          gap: 10px;
         }
 
-        .tg_welcomeCard {
-          position: relative;
-          border-radius: 24px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          overflow: hidden;
-          min-height: 34vh; /* menor (pedido) */
-          box-shadow: 0 30px 120px rgba(0,0,0,0.50);
-          transform: translateY(10px) scale(0.99);
-          opacity: 0;
-          animation: tg_welcomeIn 800ms ease forwards, tg_cardFloat 6.5s ease-in-out infinite alternate;
-          backdrop-filter: blur(14px);
-        }
-
-        @keyframes tg_welcomeIn {
-          to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-
-        @keyframes tg_cardFloat {
-          from { transform: translateY(0) scale(1); }
-          to   { transform: translateY(-6px) scale(1.01); }
-        }
-
-        .tg_welcomeGlow {
-          position: absolute;
-          inset: -40%;
-          background:
-            radial-gradient(35% 35% at 20% 30%, rgba(255, 120, 60, 0.30), transparent 65%),
-            radial-gradient(35% 35% at 75% 25%, rgba(120, 160, 255, 0.22), transparent 65%),
-            radial-gradient(35% 35% at 70% 80%, rgba(20, 240, 220, 0.16), transparent 65%);
-          filter: blur(18px);
-          opacity: 0.9;
-          pointer-events: none;
-        }
-
-        .tg_welcomeImg {
-          position: absolute;
-          inset: 0;
-          width: 100%;
-          height: 100%;
-          object-fit: contain;
-          padding: 12px;
-          display: block;
-        }
-
-        .tg_welcomeCaption {
-          position: absolute;
-          left: 14px;
-          right: 14px;
-          bottom: 12px;
-          padding: 10px 12px;
+        .tg-dayCard {
           border-radius: 16px;
-          background: rgba(0,0,0,0.45);
-          border: 1px solid rgba(255,255,255,0.10);
-          backdrop-filter: blur(10px);
-          font-weight: 950;
-          letter-spacing: -0.01em;
+          background: rgba(0, 0, 0, 0.20);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          padding: 12px 10px 10px;
+          display: grid;
+          gap: 6px;
+          justify-items: center;
+        }
+
+        .tg-dayDow {
+          font-size: 12px;
+          letter-spacing: 0.12em;
+          color: rgba(255, 255, 255, 0.72);
+          font-weight: 900;
+          text-transform: lowercase;
+        }
+
+        .tg-dayEmoji {
+          font-size: 22px;
+        }
+
+        .tg-dayTemps {
+          font-size: 13px;
+          font-weight: 850;
+          letter-spacing: -0.02em;
+          color: rgba(255, 255, 255, 0.90);
+          display: inline-flex;
+          align-items: baseline;
+          gap: 6px;
+        }
+
+        .tg-daySep {
+          color: rgba(255, 255, 255, 0.55);
+          font-weight: 700;
+        }
+
+        .tg-dayMin {
+          color: rgba(255, 255, 255, 0.70);
+          font-weight: 800;
+        }
+
+        .tg-hoursRow {
+          display: grid;
+          grid-template-columns: repeat(8, minmax(0, 1fr));
+          gap: 10px;
+        }
+
+        .tg-hourCard {
+          border-radius: 16px;
+          background: rgba(0, 0, 0, 0.20);
+          border: 1px solid rgba(255, 255, 255, 0.10);
+          padding: 12px 10px 10px;
+          display: grid;
+          gap: 6px;
+          justify-items: center;
+        }
+
+        .tg-hourTime {
+          font-size: 12px;
+          color: rgba(255, 255, 255, 0.78);
+          font-weight: 900;
+        }
+
+        .tg-hourEmoji {
+          font-size: 22px;
+        }
+
+        .tg-hourTemp {
+          font-size: 14px;
+          font-weight: 900;
+          color: rgba(255, 255, 255, 0.92);
+        }
+
+        /* Arrivals */
+        .tg-arrivalsGrid {
+          display: grid;
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 14px;
+        }
+
+        /* Empty / muted */
+        .tg-emptyCard {
+          border-radius: 22px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.12);
+          padding: 18px;
+        }
+
+        .tg-emptyTitle {
+          font-weight: 900;
+          font-size: 18px;
+          letter-spacing: -0.02em;
+        }
+
+        .tg-emptySub {
+          margin-top: 8px;
+          color: rgba(255, 255, 255, 0.72);
+          font-size: 14px;
+          line-height: 1.35;
+        }
+
+        .tg-muted {
+          color: rgba(255, 255, 255, 0.68);
           font-size: 14px;
         }
 
-        /* Footer premium */
-        .tg_bottom {
-          position: relative;
-          z-index: 15;
-          padding: 14px 28px 24px;
-        }
-
-        .tg_footer {
+        /* Ticker */
+        .tg-ticker {
+          position: fixed;
+          left: 24px;
+          right: 24px;
+          bottom: 18px;
+          height: 54px;
+          border-radius: 999px;
+          background: rgba(0, 0, 0, 0.26);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          backdrop-filter: blur(18px);
           display: grid;
           grid-template-columns: auto 1fr auto;
+          align-items: center;
           gap: 12px;
-          align-items: center;
-          padding: 12px 14px;
-          border-radius: 24px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(0,0,0,0.42);
-          backdrop-filter: blur(12px);
-          box-shadow: 0 26px 110px rgba(0,0,0,0.55);
-          position: relative;
-          overflow: hidden;
+          padding: 10px 12px;
+          box-shadow: 0 18px 60px rgba(0,0,0,0.35);
         }
 
-        .tg_footer::before {
-          content: "";
-          position: absolute;
-          inset: -30%;
-          background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
-          transform: rotate(8deg);
-          animation: tg_footerShine 7.5s ease-in-out infinite;
-          pointer-events: none;
-          opacity: 0.8;
-        }
-        @keyframes tg_footerShine {
-          from { transform: translateX(-10%) rotate(8deg); }
-          to   { transform: translateX(10%) rotate(8deg); }
-        }
-
-        .tg_live {
+        .tg-livePill {
           display: inline-flex;
           align-items: center;
           gap: 10px;
-          padding: 10px 12px;
+          padding: 10px 14px;
           border-radius: 999px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          font-weight: 950;
-          letter-spacing: 0.18em;
+          background: rgba(0, 0, 0, 0.26);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          color: rgba(255, 255, 255, 0.90);
+          font-weight: 900;
+          letter-spacing: 0.14em;
           font-size: 11px;
-          text-transform: uppercase;
-          position: relative;
-          z-index: 1;
         }
-        .tg_liveDot {
-          height: 10px;
+
+        .tg-liveDot {
           width: 10px;
+          height: 10px;
           border-radius: 999px;
-          background: rgba(255, 80, 80, 0.95);
-          box-shadow: 0 0 0 6px rgba(255, 80, 80, 0.14);
-          animation: tg_pulse 1.3s ease-in-out infinite;
-        }
-        @keyframes tg_pulse {
-          0%, 100% { transform: scale(1); opacity: 1; }
-          50% { transform: scale(1.08); opacity: 0.85; }
+          background: rgb(255, 70, 70);
+          box-shadow: 0 0 0 6px rgba(255, 70, 70, 0.14);
         }
 
-        .tg_ticker {
-          position: relative;
-          border-radius: 999px;
-          border: 1px solid rgba(255,255,255,0.10);
-          background: rgba(0,0,0,0.35);
+        .tg-marquee {
           overflow: hidden;
-          backdrop-filter: blur(10px);
-          z-index: 1;
-        }
-
-        .tg_tickerTrack {
-          display: inline-flex;
-          gap: 56px;
-          white-space: nowrap;
-          padding: 12px 18px;
-          animation: tg_marquee var(--marqueeDur, 90s) linear infinite; /* pedido: mais devagar */
-          font-size: 14px;
-          opacity: 0.92;
-          will-change: transform;
-        }
-        @keyframes tg_marquee {
-          from { transform: translateX(0); }
-          to   { transform: translateX(-50%); }
-        }
-
-        .tg_tickerFade {
-          position: absolute;
-          top: 0;
-          bottom: 0;
-          width: 70px;
-          pointer-events: none;
-        }
-        .tg_leftFade {
-          left: 0;
-          background: linear-gradient(90deg, rgba(0,0,0,0.65), transparent);
-        }
-        .tg_rightFade {
-          right: 0;
-          background: linear-gradient(270deg, rgba(0,0,0,0.65), transparent);
-        }
-
-        .tg_footerMeta {
-          display: inline-flex;
-          align-items: center;
-          justify-content: flex-end;
-          gap: 10px;
           position: relative;
-          z-index: 1;
+          height: 100%;
+          display: flex;
+          align-items: center;
+          mask-image: linear-gradient(90deg, transparent, black 10%, black 90%, transparent);
         }
-        .tg_metaChip {
-          padding: 10px 12px;
-          border-radius: 999px;
-          border: 1px solid rgba(255,255,255,0.12);
-          background: rgba(255,255,255,0.06);
-          font-size: 12px;
-          opacity: 0.88;
+
+        .tg-marqueeInner {
+          display: inline-block;
           white-space: nowrap;
+          padding-right: 40px;
+          animation: tgMarquee var(--tgMarqueeDuration) linear infinite;
+          color: rgba(255, 255, 255, 0.80);
+          font-weight: 700;
+          font-size: 13px;
         }
 
-        /* Responsive */
-        @media (max-width: 980px) {
-          .tg_time { font-size: 44px; }
-          .tg_bigTitle { font-size: 46px; }
-          .tg_tabs { display: none; }
-          .tg_footerMeta { display: none; }
-          .tg_manifestoLine { font-size: 18px; }
-          .tg_newsCard { grid-template-columns: 160px 1fr; }
-          .tg_weatherTop { grid-template-columns: 1fr; }
-          .tg_weatherDaily { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-          .tg_hourly { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-          .tg_bdayGrid { grid-template-columns: 1fr; }
-          .tg_bdayMonth { grid-template-columns: 1fr; }
-          .tg_bdayPair { grid-template-columns: 1fr; }
+        @keyframes tgMarquee {
+          from { transform: translateX(0); }
+          to { transform: translateX(-100%); }
         }
 
-        @media (prefers-reduced-motion: reduce) {
-          .tg_backdrop,
-          .tg_tickerTrack,
-          .tg_footer::before,
-          .tg_liveDot,
-          .tg_welcomeCard {
-            animation: none !important;
+        .tg-rightPills {
+          display: inline-flex;
+          gap: 10px;
+          align-items: center;
+        }
+
+        .tg-pill {
+          padding: 10px 14px;
+          border-radius: 999px;
+          background: rgba(0, 0, 0, 0.26);
+          border: 1px solid rgba(255, 255, 255, 0.14);
+          color: rgba(255, 255, 255, 0.88);
+          font-weight: 850;
+          font-size: 12px;
+        }
+
+        /* Responsivo mínimo (mas foco é TV) */
+        @media (max-width: 1100px) {
+          .tg-weatherGrid {
+            grid-template-columns: 1fr;
+          }
+          .tg-newsCard {
+            grid-template-columns: 160px 1fr;
+          }
+          .tg-bdaysGrid {
+            grid-template-columns: 1fr;
+          }
+        }
+
+        @media (max-width: 820px) {
+          .tg-time {
+            font-size: 44px;
+          }
+          .tg-tabs {
+            display: none;
+          }
+          .tg-hoursRow {
+            grid-template-columns: repeat(4, minmax(0, 1fr));
+          }
+          .tg-daysRow {
+            grid-template-columns: repeat(3, minmax(0, 1fr));
           }
         }
       `}</style>
