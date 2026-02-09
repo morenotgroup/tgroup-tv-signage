@@ -1,8 +1,9 @@
+// src/signage/SignagePremium.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { SIGNAGE_CONFIG } from "../config";
-import MusicDock from "../components/MusicDock";
+import { SIGNAGE_CONFIG } from "@/config";
+import MusicDock from "@/components/MusicDock";
 
 function pad2(n: number) {
   return String(n).padStart(2, "0");
@@ -21,13 +22,13 @@ function formatDatePtBR(now: Date) {
   }).format(now);
 }
 
-function formatMonthPtBR(monthIndex: number) {
-  // monthIndex: 0..11
-  const d = new Date(2026, monthIndex, 1);
+function formatMonthPtBR(monthIndex: number, year: number) {
+  const d = new Date(year, monthIndex, 1);
   return new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(d);
 }
 
 type WeatherLike = {
+  ok?: boolean;
   tempC?: number;
   temp?: number;
   temperature?: number;
@@ -58,6 +59,14 @@ function readTempC(weather: WeatherLike | null): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
+async function safeJson(res: Response) {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
 export default function SignagePremium() {
   const [now, setNow] = useState(() => new Date());
   const [scene, setScene] = useState(0);
@@ -78,6 +87,7 @@ export default function SignagePremium() {
 
   const monthIndex = now.getMonth(); // 0..11
   const monthKey = useMemo(() => pad2(monthIndex + 1), [monthIndex]);
+  const year = now.getFullYear();
 
   // clock tick
   useEffect(() => {
@@ -85,21 +95,23 @@ export default function SignagePremium() {
     return () => clearInterval(t);
   }, []);
 
-  // fetch weather/news
+  // ===== Fetch WEATHER (separado) =====
   useEffect(() => {
     let alive = true;
 
-    async function refreshAll() {
+    async function refreshWeather() {
       try {
-        const [w, n] = await Promise.allSettled([
-          fetch("/api/weather", { cache: "no-store" }).then((r) => r.json()),
-          fetch("/api/news", { cache: "no-store" }).then((r) => r.json()),
-        ]);
-
+        const res = await fetch("/api/weather", { cache: "no-store" });
+        const json = await safeJson(res);
         if (!alive) return;
 
-        if (w.status === "fulfilled") setWeather(w.value || null);
-        if (n.status === "fulfilled") setHeadlines(safeHeadlines(n.value));
+        if (res.ok) {
+          setWeather((json as WeatherLike) || null);
+        } else {
+          // mantém UI estável: se der erro, não “zera” tudo agressivo
+          setWeather((prev) => prev ?? null);
+        }
+
         setLastSync(new Date());
       } catch {
         if (!alive) return;
@@ -107,34 +119,91 @@ export default function SignagePremium() {
       }
     }
 
-    void refreshAll();
+    void refreshWeather();
 
-    const wt = setInterval(refreshAll, SIGNAGE_CONFIG.refreshWeatherMs ?? 10 * 60 * 1000);
-    const nt = setInterval(refreshAll, SIGNAGE_CONFIG.refreshNewsMs ?? 20 * 60 * 1000);
+    const wt = setInterval(
+      refreshWeather,
+      Number.isFinite(Number(SIGNAGE_CONFIG.refreshWeatherMs))
+        ? Number(SIGNAGE_CONFIG.refreshWeatherMs)
+        : 10 * 60 * 1000
+    );
 
     return () => {
       alive = false;
       clearInterval(wt);
+    };
+  }, []);
+
+  // ===== Fetch NEWS (separado) =====
+  useEffect(() => {
+    let alive = true;
+
+    async function refreshNews() {
+      try {
+        const res = await fetch("/api/news", { cache: "no-store" });
+        const json = await safeJson(res);
+        if (!alive) return;
+
+        if (res.ok) {
+          setHeadlines(safeHeadlines(json));
+        } else {
+          setHeadlines((prev) => prev ?? []);
+        }
+
+        setLastSync(new Date());
+      } catch {
+        if (!alive) return;
+        setLastSync(new Date());
+      }
+    }
+
+    void refreshNews();
+
+    const nt = setInterval(
+      refreshNews,
+      Number.isFinite(Number(SIGNAGE_CONFIG.refreshNewsMs))
+        ? Number(SIGNAGE_CONFIG.refreshNewsMs)
+        : 20 * 60 * 1000
+    );
+
+    return () => {
+      alive = false;
       clearInterval(nt);
     };
   }, []);
 
-  // wake lock (best-effort)
+  // ===== Wake Lock (best-effort + re-lock on visibility) =====
   useEffect(() => {
+    let cancelled = false;
+
     async function lock() {
       try {
         // @ts-ignore
-        if ("wakeLock" in navigator && tvMode) {
-          // @ts-ignore
-          wakeLockRef.current = await navigator.wakeLock.request("screen");
-        }
+        if (!tvMode) return;
+        // @ts-ignore
+        if (!("wakeLock" in navigator)) return;
+        // @ts-ignore
+        const wl = await navigator.wakeLock.request("screen");
+        if (cancelled) return;
+        wakeLockRef.current = wl;
       } catch {
         // ignore
       }
     }
+
+    function onVisibility() {
+      if (!tvMode) return;
+      if (document.visibilityState === "visible") {
+        void lock();
+      }
+    }
+
     void lock();
+    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
+      cancelled = true;
+      document.removeEventListener("visibilitychange", onVisibility);
       try {
         wakeLockRef.current?.release?.();
       } catch {}
@@ -154,8 +223,7 @@ export default function SignagePremium() {
 
     if (exact) return exact;
 
-    // Sem aniversariante no dia → faz rotação "do mês"
-    // Aceita config tanto no formato mmdd (começa com MM) quanto ddmm (termina com MM)
+    // Sem aniversariante no dia → faz rotação do mês
     const monthList = list.filter((x) => x.mmdd.startsWith(monthKey) || x.mmdd.endsWith(monthKey));
     if (monthList.length) {
       const i = Math.floor((now.getTime() / (SIGNAGE_CONFIG.sceneDurationMs || 14000)) % monthList.length);
@@ -173,7 +241,7 @@ export default function SignagePremium() {
 
   const welcomeCards = useMemo(() => {
     if (!welcomeMonthList.length) return [];
-    const max = 2; // cards por tela (fica lindo em TV 16:9)
+    const max = 2;
     const start = Math.floor((now.getTime() / (SIGNAGE_CONFIG.sceneDurationMs || 14000)) % welcomeMonthList.length);
     const out: typeof welcomeMonthList = [];
     for (let i = 0; i < Math.min(max, welcomeMonthList.length); i++) {
@@ -187,7 +255,7 @@ export default function SignagePremium() {
   // rotate scenes
   useEffect(() => {
     const ms = clamp(Number(SIGNAGE_CONFIG.sceneDurationMs || 14000), 7000, 60000);
-    const sceneCount = hasWelcomersThisMonth ? 5 : 4; // adiciona a cena 4 só se tiver welcomer no mês
+    const sceneCount = hasWelcomersThisMonth ? 5 : 4;
 
     const t = setInterval(() => setScene((s) => (s + 1) % sceneCount), ms);
     return () => clearInterval(t);
@@ -354,14 +422,14 @@ export default function SignagePremium() {
           </div>
         </div>
 
-        {/* Scene 4: Chegadas do mês (só existe se tiver welcomer no mês) */}
+        {/* Scene 4: Chegadas do mês */}
         {hasWelcomersThisMonth ? (
           <div className={`tg_scene ${scene === 4 ? "isActive" : ""}`}>
             <div className="tg_sceneInner tg_welcome">
               <div className="tg_welcomeHeader">
                 <div className="tg_welcomeTitle">Chegadas do mês</div>
                 <div className="tg_welcomeSub">
-                  {formatMonthPtBR(monthIndex)} • nova energia no ar ✨
+                  {formatMonthPtBR(monthIndex, year)} • nova energia no ar ✨
                 </div>
               </div>
 
@@ -390,7 +458,7 @@ export default function SignagePremium() {
         ) : null}
       </div>
 
-      {/* Footer premium (novo) */}
+      {/* Footer premium */}
       <div className="tg_bottom">
         <div className="tg_footer">
           <div className="tg_live">
@@ -658,9 +726,7 @@ export default function SignagePremium() {
         }
 
         /* Welcome scene */
-        .tg_welcome {
-          position: relative;
-        }
+        .tg_welcome { position: relative; }
         .tg_welcomeHeader {
           display: flex;
           align-items: baseline;
@@ -703,10 +769,7 @@ export default function SignagePremium() {
           backdrop-filter: blur(14px);
         }
 
-        @keyframes tg_welcomeIn {
-          to { opacity: 1; transform: translateY(0) scale(1); }
-        }
-
+        @keyframes tg_welcomeIn { to { opacity: 1; transform: translateY(0) scale(1); } }
         @keyframes tg_cardFloat {
           from { transform: translateY(0) scale(1); }
           to   { transform: translateY(-8px) scale(1.01); }
@@ -729,7 +792,7 @@ export default function SignagePremium() {
           inset: 0;
           width: 100%;
           height: 100%;
-          object-fit: contain; /* mantém a arte inteira (sem crop) */
+          object-fit: contain;
           padding: 10px;
           display: block;
         }
@@ -749,11 +812,7 @@ export default function SignagePremium() {
           font-size: 14px;
         }
 
-        .tg_welcomeHint {
-          margin-top: 14px;
-          font-size: 12px;
-          opacity: 0.7;
-        }
+        .tg_welcomeHint { margin-top: 14px; font-size: 12px; opacity: 0.7; }
         .tg_code {
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
           font-size: 12px;
@@ -764,11 +823,7 @@ export default function SignagePremium() {
         }
 
         /* Footer premium */
-        .tg_bottom {
-          position: relative;
-          z-index: 15;
-          padding: 14px 28px 24px;
-        }
+        .tg_bottom { position: relative; z-index: 15; padding: 14px 28px 24px; }
 
         .tg_footer {
           display: grid;
@@ -861,14 +916,8 @@ export default function SignagePremium() {
           width: 70px;
           pointer-events: none;
         }
-        .tg_leftFade {
-          left: 0;
-          background: linear-gradient(90deg, rgba(0,0,0,0.65), transparent);
-        }
-        .tg_rightFade {
-          right: 0;
-          background: linear-gradient(270deg, rgba(0,0,0,0.65), transparent);
-        }
+        .tg_leftFade { left: 0; background: linear-gradient(90deg, rgba(0,0,0,0.65), transparent); }
+        .tg_rightFade { right: 0; background: linear-gradient(270deg, rgba(0,0,0,0.65), transparent); }
 
         .tg_footerMeta {
           display: inline-flex;
