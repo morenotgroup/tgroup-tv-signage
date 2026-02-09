@@ -1,9 +1,15 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { useSearchParams } from "next/navigation";
+import React, { useEffect, useMemo, useState } from "react";
+import { Montserrat } from "next/font/google";
 import { SIGNAGE_CONFIG } from "@/config";
 import MusicDock from "@/components/MusicDock";
+
+const montserrat = Montserrat({
+  subsets: ["latin"],
+  weight: ["400", "500", "600", "700", "800", "900"],
+  display: "swap",
+});
 
 type SceneId = "welcome" | "arrivals" | "birthdays" | "weather" | "news";
 
@@ -94,12 +100,6 @@ function monthNamePt(monthIndex0: number) {
   return months[monthIndex0] ?? "mês";
 }
 
-function weekdayPtShort(d: Date) {
-  const w = d.toLocaleDateString("pt-BR", { weekday: "short" });
-  // geralmente vem "seg.", "ter." etc
-  return w.replace(".", "").toLowerCase();
-}
-
 function formatDateLongPt(d: Date) {
   // "segunda-feira, 09 de fevereiro de 2026"
   return d.toLocaleDateString("pt-BR", {
@@ -120,20 +120,34 @@ function domainFromUrl(url?: string) {
 }
 
 function clearbitLogo(domain?: string) {
-  // boa variação visual (quando existe logo)
   if (!domain) return undefined;
   return `https://logo.clearbit.com/${domain}`;
 }
 
 function googleFavicon(domain?: string) {
   if (!domain) return undefined;
-  // fallback universal
   return `https://www.google.com/s2/favicons?domain=${encodeURIComponent(domain)}&sz=128`;
 }
 
+/**
+ * 🔥 IMPORTANTE:
+ * Removi useSearchParams (Next) porque isso estava quebrando o build (prerender)
+ * e exigindo Suspense no /.
+ *
+ * Aqui a gente lê a query do browser via window (client-only), sem suspense.
+ */
 function useTvMode() {
-  const params = useSearchParams();
-  const tv = params?.get("tv") === "1";
+  const [tv, setTv] = useState(false);
+
+  useEffect(() => {
+    try {
+      const sp = new URLSearchParams(window.location.search);
+      setTv(sp.get("tv") === "1");
+    } catch {
+      setTv(false);
+    }
+  }, []);
+
   return tv;
 }
 
@@ -152,7 +166,7 @@ export default function SignageV2() {
   const tv = useTvMode();
   const now = useClock(1000);
 
-  // ordem das telas (você pode reordenar aqui se quiser)
+  // ordem das telas
   const scenes: SceneId[] = useMemo(
     () => ["welcome", "arrivals", "birthdays", "weather", "news"],
     []
@@ -164,16 +178,23 @@ export default function SignageV2() {
     return clamp(fromCfg, 8000, 20000);
   }, [cfg?.sceneDurationMs]);
 
-  // refreshers (bem conservador pra recepção)
-  const refreshWeatherMs = useMemo(() => clamp(safeNumber(cfg?.refreshWeatherMs, 10 * 60_000), 60_000, 60 * 60_000), [cfg?.refreshWeatherMs]);
-  const refreshNewsMs = useMemo(() => clamp(safeNumber(cfg?.refreshNewsMs, 7 * 60_000), 60_000, 60 * 60_000), [cfg?.refreshNewsMs]);
-  const refreshBirthdaysMs = useMemo(() => clamp(safeNumber(cfg?.refreshBirthdaysMs, 6 * 60 * 60_000), 60_000, 48 * 60 * 60_000), [cfg?.refreshBirthdaysMs]);
+  // refreshers
+  const refreshWeatherMs = useMemo(
+    () => clamp(safeNumber(cfg?.refreshWeatherMs, 10 * 60_000), 60_000, 60 * 60_000),
+    [cfg?.refreshWeatherMs]
+  );
+  const refreshNewsMs = useMemo(
+    () => clamp(safeNumber(cfg?.refreshNewsMs, 7 * 60_000), 60_000, 60 * 60_000),
+    [cfg?.refreshNewsMs]
+  );
+  const refreshBirthdaysMs = useMemo(
+    () => clamp(safeNumber(cfg?.refreshBirthdaysMs, 6 * 60 * 60_000), 60_000, 48 * 60 * 60_000),
+    [cfg?.refreshBirthdaysMs]
+  );
 
   const [sceneIndex, setSceneIndex] = useState(0);
-
   const activeScene = scenes[sceneIndex] ?? "welcome";
 
-  // Data
   const [weather, setWeather] = useState<WeatherPayload | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [birthdays, setBirthdays] = useState<BirthdayItem[]>([]);
@@ -218,14 +239,7 @@ export default function SignageV2() {
     let alive = true;
 
     function normalizeNewsPayload(payload: any): NewsItem[] {
-      // aceita vários formatos (pra não quebrar com mudanças)
-      const items =
-        payload?.items ??
-        payload?.news ??
-        payload?.data ??
-        payload ??
-        [];
-
+      const items = payload?.items ?? payload?.news ?? payload?.data ?? payload ?? [];
       if (!Array.isArray(items)) return [];
 
       return items
@@ -264,7 +278,7 @@ export default function SignageV2() {
     };
   }, [refreshNewsMs]);
 
-  // Fetch Birthdays (auto-descobre a pasta /public/signage/birthdays)
+  // Fetch Birthdays
   useEffect(() => {
     let alive = true;
 
@@ -301,20 +315,21 @@ export default function SignageV2() {
     };
   }, [refreshBirthdaysMs]);
 
-  // Ticker (lento, legível)
+  // Ticker
   const tickerItems = useMemo(() => {
     const base = news.slice(0, 12).map((n) => n.title).filter(Boolean);
-    // fallback caso news esteja vazio
     if (base.length === 0) return ["T.Group • Recepção • Bem-vindas, vindes e vindos"];
     return base;
   }, [news]);
 
   // Header data
-  const timeHHMM = useMemo(() => now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }), [now]);
+  const timeHHMM = useMemo(
+    () => now.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" }),
+    [now]
+  );
   const dateLong = useMemo(() => formatDateLongPt(now), [now]);
 
   const locationLabel = useMemo(() => {
-    // mantém Perdizes - São Paulo como você pediu (padrão)
     return cfg?.locationLabel ?? "Perdizes - São Paulo";
   }, [cfg?.locationLabel]);
 
@@ -325,10 +340,13 @@ export default function SignageV2() {
   }, [weather?.tempC]);
 
   // Birthdays do mês atual (ordem alfabética + mostra data)
-  const month0 = now.getMonth(); // 0..11
-  const month1 = month0 + 1; // 1..12
+  const month0 = now.getMonth();
+  const month1 = month0 + 1;
+
   const birthdaysThisMonth = useMemo(() => {
-    const filtered = birthdays.filter((b) => b.month === month1 || (!b.month && b.mmdd?.startsWith(pad2(month1))));
+    const filtered = birthdays.filter(
+      (b) => b.month === month1 || (!b.month && b.mmdd?.startsWith(pad2(month1)))
+    );
     const sorted = [...filtered].sort((a, b) => {
       const na = (a.name ?? "").toLocaleLowerCase("pt-BR");
       const nb = (b.name ?? "").toLocaleLowerCase("pt-BR");
@@ -337,7 +355,6 @@ export default function SignageV2() {
     return sorted;
   }, [birthdays, month1]);
 
-  // Duas artes “rodando” na tela (aniversários)
   const [birthdayCarouselIndex, setBirthdayCarouselIndex] = useState(0);
   useEffect(() => {
     if (birthdaysThisMonth.length <= 2) return;
@@ -354,7 +371,7 @@ export default function SignageV2() {
     return [a, b].filter(Boolean);
   }, [birthdaysThisMonth, birthdayCarouselIndex]);
 
-  // Chegadas do mês (harmoniza tamanho e evita “estourar”)
+  // Chegadas do mês
   const [arrivalsIndex, setArrivalsIndex] = useState(0);
   useEffect(() => {
     if (!arrivals || arrivals.length <= 2) return;
@@ -371,7 +388,7 @@ export default function SignageV2() {
     return [a, b].filter(Boolean);
   }, [arrivals, arrivalsIndex]);
 
-  // About texts (mantém SEU TEXTO, só refina formato)
+  // About texts (mantém seus textos)
   const about = useMemo(() => {
     const mission =
       cfg?.mission ??
@@ -390,17 +407,22 @@ export default function SignageV2() {
     return { mission, vision, values };
   }, [cfg?.mission, cfg?.vision, cfg?.values]);
 
-  // Tabs (só visual mesmo)
+  // Tabs
   const tabs = useMemo(() => {
     const raw = cfg?.brandTabs;
     if (Array.isArray(raw) && raw.length) {
-      return raw.map((t: any) => (typeof t === "string" ? t : t?.label ?? t?.name ?? "")).filter(Boolean);
+      return raw
+        .map((t: any) => (typeof t === "string" ? t : t?.label ?? t?.name ?? ""))
+        .filter(Boolean);
     }
     return ["BRANDS", "VENUES", "DREAMS", "YOUTH"];
   }, [cfg?.brandTabs]);
 
   return (
-    <div className={`tg_root ${tv ? "tv" : ""}`} data-scene={activeScene}>
+    <div
+      className={`tg_root ${montserrat.className} ${tv ? "tv" : ""}`}
+      data-scene={activeScene}
+    >
       {/* Header */}
       <header className="tg_header">
         <div className="tg_brand">
@@ -430,67 +452,80 @@ export default function SignageV2() {
       {/* Content */}
       <main className="tg_main">
         {activeScene === "welcome" && (
-          <section className="tg_scene">
-            <h1 className="tg_title">Bem-vindas, vindes e vindos ao T.Group</h1>
-            <div className="tg_kicker">
-              <span>{locationLabel}</span>
-              {tempNowLabel ? (
-                <>
-                  <span className="dot">•</span>
-                  <span>Clima agora: {tempNowLabel}</span>
-                </>
-              ) : null}
-            </div>
-
-            <div className="tg_welcomeCard">
-              <div className="tg_welcomeArt" aria-hidden>
-                <div className="blob b1" />
-                <div className="blob b2" />
-                <div className="blob b3" />
-                <div className="grid" />
-                <div className="tg_welcomeStamp">Recepção</div>
+          <section className="tg_scene tg_sceneNoPad">
+            <div className="tg_welcome2">
+              {/* Orbs / glow mais vivo (sem atrapalhar leitura) */}
+              <div className="tg_welcome2Orbs" aria-hidden>
+                <span className="orb o1" />
+                <span className="orb o2" />
+                <span className="orb o3" />
+                <span className="orb o4" />
+                <span className="orb o5" />
               </div>
 
-              <div className="tg_about">
-                <div className="tg_aboutHeader">
-                  <span className="tg_pill">SOBRE A GENTE</span>
-                  <span className="tg_aboutHint">entretenimento • live marketing • performance • tecnologia</span>
-                </div>
+              {/* Header da página */}
+              <div className="tg_welcome2Header">
+                <h1 className="tg_welcome2Title">
+                  Bem-vindas, vindes e vindos ao <span className="brand">T.Group</span>
+                </h1>
 
-                {/* Missão + Visão + Valores JUNTOS (um único bloco premium) */}
-                <div className="tg_aboutUnified">
-                  <div className="tg_aboutCol">
-                    <div className="tg_aboutLabel">Missão</div>
-                    <div className="tg_aboutText">{about.mission}</div>
+                <div className="tg_welcome2Meta">
+                  <div className="tg_welcome2Kicker">
+                    <span>{locationLabel}</span>
+                    {tempNowLabel ? (
+                      <>
+                        <span className="dot">•</span>
+                        <span>Clima agora: {tempNowLabel}</span>
+                      </>
+                    ) : null}
                   </div>
 
-                  <div className="tg_vline" aria-hidden />
-
-                  <div className="tg_aboutCol">
-                    <div className="tg_aboutLabel">Visão</div>
-                    <div className="tg_aboutText">{about.vision}</div>
-                  </div>
-
-                  <div className="tg_vline" aria-hidden />
-
-                  <div className="tg_aboutCol">
-                    <div className="tg_aboutLabel">Valores</div>
-                    <ul className="tg_values">
-                      {about.values.map((v: string) => (
-                        <li key={v} className="tg_value">
-                          <span className="check" aria-hidden>
-                            ✓
-                          </span>
-                          <span>{v}</span>
-                        </li>
-                      ))}
-                    </ul>
+                  <div className="tg_welcome2Tag">
+                    entretenimento • live marketing • performance • tecnologia
                   </div>
                 </div>
+              </div>
 
-                <div className="tg_welcomeFooter">
-                  <span className="tg_mini">Sinta-se em casa. A gente cuida do resto.</span>
+              {/* Conteúdo principal: 3 blocos fortes */}
+              <div className="tg_welcome2Grid">
+                <div className="tg_w2Panel mission">
+                  <div className="tg_w2Top">
+                    <span className="tg_w2Pill">MISSÃO</span>
+                  </div>
+                  <div className="tg_w2Text">{about.mission}</div>
+                  <div className="tg_w2Hint">Do briefing ao aplauso — com execução impecável.</div>
                 </div>
+
+                <div className="tg_w2Panel vision">
+                  <div className="tg_w2Top">
+                    <span className="tg_w2Pill">VISÃO</span>
+                  </div>
+                  <div className="tg_w2Text">{about.vision}</div>
+                  <div className="tg_w2Hint">Performance real + tecnologia, sem perder o brilho.</div>
+                </div>
+
+                <div className="tg_w2Panel values">
+                  <div className="tg_w2Top">
+                    <span className="tg_w2Pill">VALORES</span>
+                  </div>
+
+                  <ul className="tg_w2Values">
+                    {about.values.map((v: string) => (
+                      <li key={v} className="tg_w2Value">
+                        <span className="tg_w2Check" aria-hidden>
+                          ✓
+                        </span>
+                        <span>{v}</span>
+                      </li>
+                    ))}
+                  </ul>
+
+                  <div className="tg_w2Hint">Cultura aqui não é frase bonita — é operação.</div>
+                </div>
+              </div>
+
+              <div className="tg_welcome2Footer">
+                <span className="tg_welcome2Mini">Sinta-se em casa. A gente cuida do resto.</span>
               </div>
             </div>
           </section>
@@ -507,7 +542,9 @@ export default function SignageV2() {
               {arrivalsShowcase.length === 0 ? (
                 <div className="tg_empty">
                   <div className="tg_emptyTitle">Sem artes de chegadas no momento</div>
-                  <div className="tg_emptySub">Quando tiver, elas aparecem aqui automaticamente (via config / posters).</div>
+                  <div className="tg_emptySub">
+                    Quando tiver, elas aparecem aqui automaticamente (via config / posters).
+                  </div>
                 </div>
               ) : (
                 arrivalsShowcase.slice(0, 2).map((p, idx) => (
@@ -530,7 +567,9 @@ export default function SignageV2() {
                 {birthdayShowcase.length === 0 ? (
                   <div className="tg_empty">
                     <div className="tg_emptyTitle">Sem aniversários cadastrados</div>
-                    <div className="tg_emptySub">Se já subiu as artes no GitHub, essa tela passa a preencher sozinha.</div>
+                    <div className="tg_emptySub">
+                      Se já subiu as artes no GitHub, essa tela passa a preencher sozinha.
+                    </div>
                   </div>
                 ) : (
                   <div className="tg_birthdaysCards">
@@ -573,7 +612,9 @@ export default function SignageV2() {
                         <span className="tg_listLine">
                           <b>{b.name ?? "—"}</b>
                           {b.day && b.month ? (
-                            <span className="tg_listDim">{` • ${b.day} de ${monthNamePt((b.month ?? month1) - 1)}`}</span>
+                            <span className="tg_listDim">{` • ${b.day} de ${monthNamePt(
+                              (b.month ?? month1) - 1
+                            )}`}</span>
                           ) : null}
                           {b.role ? <span className="tg_listDim">{` • ${b.role}`}</span> : null}
                           {b.org ? <span className="tg_listDim">{` • ${b.org}`}</span> : null}
@@ -649,7 +690,6 @@ export default function SignageV2() {
             <h1 className="tg_title">News</h1>
 
             <div className="tg_newsGrid">
-              {/* Featured */}
               <div className="tg_newsFeatured">
                 {news[0] ? (
                   <NewsCard item={news[0]} featured />
@@ -705,14 +745,10 @@ export default function SignageV2() {
         </div>
       </footer>
 
-      {/* MusicDock (mantém como está — só reposiciona pra não “comer” a tela) */}
+      {/* MusicDock */}
       <div className="tg_musicDock">
         <MusicDock />
       </div>
-
-      <style jsx>{`
-        /* componente auxiliar NewsCard */
-      `}</style>
 
       <GlobalStyles />
     </div>
@@ -723,21 +759,17 @@ function NewsCard({ item, featured }: { item: NewsItem; featured?: boolean }) {
   const domain = domainFromUrl(item.url);
   const logo = clearbitLogo(domain);
   const favicon = googleFavicon(domain);
-
-  // Layout: se tiver thumbnail real, usa. Senão tenta logo. Senão favicon.
   const mediaSrc = item.image || logo || favicon;
 
   return (
     <article className={`tg_newsCard ${featured ? "featured" : ""}`}>
       <div className="tg_newsMedia">
         {mediaSrc ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             className="tg_newsImg"
             src={mediaSrc}
             alt=""
             onError={(e) => {
-              // fallback em cadeia: image -> clearbit -> favicon
               const img = e.currentTarget;
               if (img.src === mediaSrc && logo && img.src !== logo) img.src = logo;
               else if (favicon && img.src !== favicon) img.src = favicon;
@@ -767,7 +799,6 @@ function GlobalStyles() {
         position: relative;
         overflow: hidden;
         color: #fff;
-        font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial;
         background: radial-gradient(1100px 600px at 12% 18%, rgba(60, 80, 255, 0.35), transparent 55%),
           radial-gradient(900px 700px at 85% 15%, rgba(0, 220, 180, 0.26), transparent 60%),
           radial-gradient(1000px 800px at 70% 90%, rgba(255, 30, 140, 0.22), transparent 60%),
@@ -775,7 +806,6 @@ function GlobalStyles() {
           #05060b;
       }
 
-      /* mais “vivo” por tela (sem atrapalhar leitura) */
       .tg_root[data-scene="news"] {
         background: radial-gradient(900px 600px at 10% 20%, rgba(255, 60, 120, 0.28), transparent 55%),
           radial-gradient(900px 700px at 80% 20%, rgba(60, 140, 255, 0.24), transparent 60%),
@@ -885,6 +915,13 @@ function GlobalStyles() {
         box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
         padding: 28px;
         min-height: calc(100vh - 190px);
+        position: relative;
+      }
+
+      /* Para a Welcome, a gente “mata” o padding do container e usa o layout TV-first interno */
+      .tg_sceneNoPad {
+        padding: 0 !important;
+        overflow: hidden;
       }
 
       .tg_sceneHeader {
@@ -906,165 +943,260 @@ function GlobalStyles() {
         line-height: 1.04;
       }
 
-      .tg_kicker {
-        opacity: 0.85;
-        font-size: 14px;
+      /* ====== WELCOME 2.0 (TV-FIRST) ====== */
+      .tg_welcome2 {
+        position: relative;
+        min-height: calc(100vh - 190px);
+        padding: 34px 34px 26px;
+      }
+
+      .tg_welcome2Orbs {
+        position: absolute;
+        inset: -20%;
+        pointer-events: none;
+        opacity: 1;
+      }
+      .tg_welcome2Orbs .orb {
+        position: absolute;
+        width: 560px;
+        height: 560px;
+        border-radius: 999px;
+        filter: blur(90px);
+        opacity: 0.55;
+      }
+      .tg_welcome2Orbs .o1 {
+        left: -120px;
+        top: -120px;
+        background: radial-gradient(circle at 30% 30%, rgba(255, 0, 180, 0.9), transparent 60%);
+      }
+      .tg_welcome2Orbs .o2 {
+        right: -200px;
+        top: -160px;
+        width: 680px;
+        height: 680px;
+        background: radial-gradient(circle at 40% 30%, rgba(0, 220, 255, 0.85), transparent 62%);
+      }
+      .tg_welcome2Orbs .o3 {
+        left: 18%;
+        bottom: -260px;
+        width: 820px;
+        height: 820px;
+        opacity: 0.45;
+        background: radial-gradient(circle at 45% 55%, rgba(140, 90, 255, 0.9), transparent 62%);
+      }
+      .tg_welcome2Orbs .o4 {
+        right: 4%;
+        bottom: -220px;
+        width: 680px;
+        height: 680px;
+        opacity: 0.35;
+        background: radial-gradient(circle at 40% 40%, rgba(180, 255, 0, 0.75), transparent 60%);
+      }
+      .tg_welcome2Orbs .o5 {
+        left: 40%;
+        top: 18%;
+        width: 560px;
+        height: 560px;
+        opacity: 0.18;
+        background: radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.9), transparent 60%);
+      }
+
+      .tg_welcome2Header {
+        position: relative;
+        z-index: 1;
+      }
+
+      .tg_welcome2Title {
+        margin: 0;
+        font-weight: 900;
+        letter-spacing: -0.06em;
+        line-height: 0.98;
+        font-size: clamp(46px, 4.7vw, 94px);
+        text-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+      }
+      .tg_welcome2Title .brand {
+        opacity: 0.98;
+      }
+
+      .tg_welcome2Meta {
+        margin-top: 14px;
         display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 14px;
+        flex-wrap: wrap;
+      }
+
+      .tg_welcome2Kicker {
+        opacity: 0.78;
+        font-weight: 700;
+        font-size: 16px;
+        display: inline-flex;
         gap: 10px;
         align-items: center;
-        margin-bottom: 18px;
       }
+
+      .tg_welcome2Tag {
+        opacity: 0.75;
+        font-weight: 800;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(0, 0, 0, 0.18);
+        backdrop-filter: blur(10px);
+      }
+
       .dot {
         opacity: 0.6;
       }
 
-      /* Welcome */
-      .tg_welcomeCard {
-        display: grid;
-        grid-template-columns: 360px 1fr;
-        gap: 18px;
-        align-items: stretch;
-        margin-top: 18px;
-      }
-
-      .tg_welcomeArt {
+      .tg_welcome2Grid {
         position: relative;
-        border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(255, 255, 255, 0.04);
+        z-index: 1;
+        margin-top: 22px;
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 16px;
+        align-items: stretch;
+      }
+
+      .tg_w2Panel {
+        position: relative;
+        border-radius: 28px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.06), rgba(0, 0, 0, 0.16));
+        backdrop-filter: blur(12px);
+        box-shadow: 0 30px 80px rgba(0, 0, 0, 0.40);
+        padding: 22px 22px 18px;
         overflow: hidden;
-        min-height: 360px;
-      }
-      .tg_welcomeStamp {
-        position: absolute;
-        left: 18px;
-        bottom: 18px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: rgba(0, 0, 0, 0.22);
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        font-size: 12px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        opacity: 0.9;
-      }
-      .blob {
-        position: absolute;
-        width: 340px;
-        height: 340px;
-        border-radius: 999px;
-        filter: blur(18px);
-        opacity: 0.85;
-      }
-      .b1 {
-        left: -120px;
-        top: -120px;
-        background: radial-gradient(circle at 30% 30%, rgba(60, 80, 255, 0.9), rgba(60, 80, 255, 0.0) 60%);
-      }
-      .b2 {
-        right: -120px;
-        top: -80px;
-        background: radial-gradient(circle at 60% 40%, rgba(0, 220, 180, 0.85), rgba(0, 220, 180, 0.0) 60%);
-      }
-      .b3 {
-        left: 40px;
-        bottom: -160px;
-        background: radial-gradient(circle at 40% 60%, rgba(255, 30, 140, 0.75), rgba(255, 30, 140, 0.0) 60%);
-      }
-      .grid {
-        position: absolute;
-        inset: 0;
-        background-image: linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
-        background-size: 46px 46px;
-        mask-image: radial-gradient(circle at 30% 30%, rgba(0, 0, 0, 1), transparent 65%);
-        opacity: 0.6;
+        min-height: 46vh;
       }
 
-      .tg_about {
-        border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(255, 255, 255, 0.035);
-        padding: 18px;
+      .tg_w2Panel::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        right: 0;
+        height: 8px;
+        opacity: 0.95;
       }
 
-      .tg_aboutHeader {
+      .tg_w2Panel::after {
+        content: "";
+        position: absolute;
+        inset: -30%;
+        filter: blur(80px);
+        opacity: 0.45;
+        pointer-events: none;
+      }
+
+      .tg_w2Panel.mission::before {
+        background: linear-gradient(90deg, rgba(255, 0, 180, 0.95), rgba(255, 90, 0, 0.85));
+      }
+      .tg_w2Panel.mission::after {
+        background: radial-gradient(circle at 30% 30%, rgba(255, 0, 180, 0.75), transparent 60%);
+      }
+
+      .tg_w2Panel.vision::before {
+        background: linear-gradient(90deg, rgba(0, 220, 255, 0.95), rgba(80, 120, 255, 0.9));
+      }
+      .tg_w2Panel.vision::after {
+        background: radial-gradient(circle at 70% 30%, rgba(0, 220, 255, 0.70), transparent 60%);
+      }
+
+      .tg_w2Panel.values::before {
+        background: linear-gradient(90deg, rgba(180, 255, 0, 0.9), rgba(140, 90, 255, 0.85));
+      }
+      .tg_w2Panel.values::after {
+        background: radial-gradient(circle at 30% 70%, rgba(180, 255, 0, 0.55), transparent 60%);
+      }
+
+      .tg_w2Top {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
-        margin-bottom: 12px;
-      }
-      .tg_pill {
-        padding: 8px 12px;
-        border-radius: 999px;
-        font-size: 12px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.18);
-      }
-      .tg_aboutHint {
-        font-size: 12px;
-        opacity: 0.75;
-        white-space: nowrap;
+        margin-bottom: 14px;
       }
 
-      .tg_aboutUnified {
-        display: grid;
-        grid-template-columns: 1fr 1px 1fr 1px 1fr;
-        gap: 14px;
-        border-radius: 18px;
-        padding: 16px;
-        background: rgba(0, 0, 0, 0.18);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-      }
-      .tg_vline {
-        width: 1px;
-        background: rgba(255, 255, 255, 0.10);
-      }
-      .tg_aboutLabel {
-        font-size: 13px;
-        opacity: 0.78;
-        margin-bottom: 8px;
-        letter-spacing: 0.08em;
+      .tg_w2Pill {
+        font-size: 12px;
+        letter-spacing: 0.18em;
         text-transform: uppercase;
+        font-weight: 900;
+        opacity: 0.82;
+        padding: 10px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(0, 0, 0, 0.18);
       }
-      .tg_aboutText {
-        font-size: 18px;
-        line-height: 1.25;
+
+      .tg_w2Text {
+        font-weight: 900;
+        letter-spacing: -0.04em;
+        line-height: 1.06;
+        font-size: clamp(24px, 2.05vw, 42px);
+        text-shadow: 0 16px 40px rgba(0, 0, 0, 0.40);
+      }
+
+      .tg_w2Hint {
+        margin-top: 16px;
+        opacity: 0.70;
         font-weight: 700;
-        letter-spacing: -0.02em;
+        font-size: 14px;
       }
-      .tg_values {
+
+      .tg_w2Values {
         list-style: none;
         padding: 0;
-        margin: 0;
+        margin: 4px 0 0;
         display: grid;
-        gap: 8px;
+        gap: 12px;
       }
-      .tg_value {
-        display: flex;
-        gap: 10px;
-        align-items: flex-start;
-        font-size: 14px;
-        opacity: 0.92;
+
+      .tg_w2Value {
+        display: grid;
+        grid-template-columns: 28px 1fr;
+        gap: 12px;
+        align-items: start;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        line-height: 1.1;
+        font-size: clamp(18px, 1.35vw, 28px);
       }
-      .check {
-        width: 20px;
-        height: 20px;
-        border-radius: 8px;
+
+      .tg_w2Check {
+        width: 28px;
+        height: 28px;
+        border-radius: 12px;
         display: grid;
         place-items: center;
-        background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        flex: 0 0 20px;
-        margin-top: 1px;
+        background: rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        margin-top: 2px;
       }
-      .tg_welcomeFooter {
-        margin-top: 14px;
-        opacity: 0.75;
-        font-size: 12px;
+
+      .tg_welcome2Footer {
+        position: relative;
+        z-index: 1;
+        margin-top: 18px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        opacity: 0.72;
+        font-weight: 700;
+        font-size: 13px;
+      }
+
+      .tg_welcome2Mini {
+        padding: 10px 14px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.10);
+        background: rgba(0, 0, 0, 0.16);
+        backdrop-filter: blur(10px);
       }
 
       /* Posters (Arrivals) */
@@ -1080,12 +1212,12 @@ function GlobalStyles() {
         border: 1px solid rgba(255, 255, 255, 0.12);
         background: rgba(255, 255, 255, 0.03);
         overflow: hidden;
-        height: 62vh; /* impede “gigante demais” */
+        height: 62vh;
       }
       .tg_posterImg {
         width: 100%;
         height: 100%;
-        object-fit: contain; /* NÃO estoura/corta */
+        object-fit: contain;
         padding: 18px;
         filter: drop-shadow(0 20px 35px rgba(0, 0, 0, 0.55));
       }
@@ -1487,11 +1619,11 @@ function GlobalStyles() {
         opacity: 0.9;
       }
 
-      /* MusicDock posicionado (sem tampar conteúdo) */
+      /* MusicDock */
       .tg_musicDock {
         position: fixed;
         left: 18px;
-        bottom: 84px; /* sobe acima do ticker */
+        bottom: 84px;
         z-index: 50;
         transform: scale(0.92);
         transform-origin: left bottom;
@@ -1521,18 +1653,24 @@ function GlobalStyles() {
         max-width: 520px;
       }
 
-      /* TV mode: reduz “explosão” de fonte */
+      /* TV mode: ajuste fino */
       .tg_root.tv .tg_time {
         font-size: 54px;
       }
       .tg_root.tv .tg_title {
         font-size: 46px;
       }
-      .tg_root.tv .tg_aboutText {
-        font-size: 17px;
-      }
       .tg_root.tv .tg_scene {
         padding: 26px;
+      }
+      .tg_root.tv .tg_welcome2 {
+        padding: 30px 30px 24px;
+      }
+      .tg_root.tv .tg_welcome2Title {
+        font-size: clamp(42px, 4.3vw, 86px);
+      }
+      .tg_root.tv .tg_w2Panel {
+        min-height: 44vh;
       }
     `}</style>
   );
