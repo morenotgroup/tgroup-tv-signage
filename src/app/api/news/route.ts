@@ -10,207 +10,203 @@ type NewsItem = {
   image?: string;
 };
 
+const CACHE_MS = 5 * 60 * 1000;
 let CACHE: { ts: number; items: NewsItem[] } | null = null;
 
-const DEFAULT_FEEDS = [
-  // Brasil + pt-BR (alguns trazem imagem no description/enclosure, outros via OG)
-  "https://rss.uol.com.br/feed/noticias.xml",
-  "https://g1.globo.com/rss/g1/",
-  "https://www.bbc.com/portuguese/index.xml",
+const FEEDS: Array<{ name: string; url: string }> = [
+  { name: "G1", url: "https://g1.globo.com/rss/g1/" },
+  { name: "UOL", url: "https://rss.uol.com.br/feed/noticias.xml" },
+  { name: "BBC", url: "https://feeds.bbci.co.uk/portuguese/rss.xml" },
+  // Se quiser adicionar mais depois, só coloca aqui.
 ];
 
-function decodeHtml(s: string) {
+function decodeHtmlEntities(s: string) {
+  // decode básico (suficiente para títulos RSS)
   return s
-    .replace(/<!\[CDATA\[(.*?)\]\]>/g, "$1")
     .replace(/&amp;/g, "&")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => String.fromCharCode(parseInt(n, 16)));
 }
 
-function stripTags(s: string) {
-  return s.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+function stripCdata(s: string) {
+  const m = s.match(/^<!\[CDATA\[([\s\S]*?)\]\]>$/i);
+  return m ? m[1] : s;
 }
 
-function safeUrl(u?: string) {
-  if (!u) return undefined;
-  const s = u.trim();
-  if (!/^https?:\/\//i.test(s)) return undefined;
-  return s;
+function cleanText(s?: string) {
+  if (!s) return "";
+  try {
+    return decodeHtmlEntities(stripCdata(s).trim()).normalize("NFC").replace(/\uFFFD/g, "");
+  } catch {
+    return decodeHtmlEntities(stripCdata(s).trim()).replace(/\uFFFD/g, "");
+  }
 }
 
-function getTag(block: string, tag: string) {
+function extractTag(block: string, tag: string) {
   const re = new RegExp(`<${tag}[^>]*>([\\s\\S]*?)<\\/${tag}>`, "i");
   const m = block.match(re);
-  return m?.[1] ? decodeHtml(m[1]).trim() : undefined;
+  return m?.[1];
 }
 
-function getAttr(block: string, tag: string, attr: string) {
-  const re = new RegExp(`<${tag}[^>]*${attr}=["']([^"']+)["'][^>]*>`, "i");
+function extractAttr(block: string, tag: string, attr: string) {
+  const re = new RegExp(`<${tag}[^>]*\\s${attr}="([^"]+)"[^>]*>`, "i");
   const m = block.match(re);
-  return m?.[1] ? decodeHtml(m[1]).trim() : undefined;
+  return m?.[1];
 }
 
-function extractFirstImageFromHtml(html?: string) {
-  if (!html) return undefined;
-  const m =
-    html.match(/<img[^>]+src=["']([^"']+)["']/i) ||
-    html.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i) ||
-    html.match(/<meta[^>]+name=["']og:image["'][^>]+content=["']([^"']+)["']/i);
-  return safeUrl(m?.[1]);
+function extractFirstImage(block: string) {
+  // 1) media:content url
+  const m1 = block.match(/<media:content[^>]*url="([^"]+)"/i);
+  if (m1?.[1]) return m1[1];
+
+  // 2) media:thumbnail url
+  const m2 = block.match(/<media:thumbnail[^>]*url="([^"]+)"/i);
+  if (m2?.[1]) return m2[1];
+
+  // 3) enclosure url
+  const m3 = block.match(/<enclosure[^>]*url="([^"]+)"/i);
+  if (m3?.[1]) return m3[1];
+
+  // 4) img dentro do description/content
+  const desc = extractTag(block, "description") ?? extractTag(block, "content:encoded") ?? "";
+  const m4 = desc.match(/<img[^>]*src="([^"]+)"/i);
+  if (m4?.[1]) return m4[1];
+
+  return undefined;
 }
 
-function parseRssItems(xml: string): NewsItem[] {
-  const out: NewsItem[] = [];
+function parseRss(xml: string, sourceName: string): NewsItem[] {
+  // RSS
+  const items: NewsItem[] = [];
+  const parts = xml.split(/<item[\s>]/i).slice(1);
 
-  // RSS <item>...
-  const items = xml.match(/<item\b[\s\S]*?<\/item>/gi) ?? [];
-  for (const it of items) {
-    const title = stripTags(getTag(it, "title") ?? "");
-    const link = safeUrl(getTag(it, "link") ?? getAttr(it, "link", "href"));
-    const source = stripTags(getTag(it, "source") ?? getTag(it, "dc:creator") ?? "") || undefined;
+  for (const p of parts) {
+    const block = p.split(/<\/item>/i)[0] ?? "";
 
-    // imagens comuns em RSS
-    const media =
-      safeUrl(getAttr(it, "media:content", "url")) ||
-      safeUrl(getAttr(it, "media:thumbnail", "url")) ||
-      safeUrl(getAttr(it, "enclosure", "url")) ||
-      extractFirstImageFromHtml(getTag(it, "description"));
+    const rawTitle = extractTag(block, "title") ?? "";
+    const title = cleanText(rawTitle);
+    if (!title) continue;
 
-    if (title) out.push({ title, url: link, source, image: media });
+    // link pode vir como <link> ou <link href="">
+    const link = cleanText(extractTag(block, "link") ?? extractAttr(block, "link", "href") ?? "");
+    const image = extractFirstImage(block);
+
+    // alguns feeds têm source no channel, mas aqui passamos o nome do feed
+    items.push({
+      title,
+      url: link || undefined,
+      source: sourceName,
+      image,
+    });
   }
 
-  // Atom <entry>...
-  const entries = xml.match(/<entry\b[\s\S]*?<\/entry>/gi) ?? [];
-  for (const en of entries) {
-    const title = stripTags(getTag(en, "title") ?? "");
-    const link = safeUrl(getAttr(en, "link", "href")) || safeUrl(getTag(en, "link"));
-    const source =
-      stripTags(getTag(en, "source") ?? getTag(en, "author") ?? getTag(en, "name") ?? "") || undefined;
+  // ATOM (caso algum feed venha assim)
+  if (items.length === 0) {
+    const entries = xml.split(/<entry[\s>]/i).slice(1);
+    for (const e of entries) {
+      const block = e.split(/<\/entry>/i)[0] ?? "";
+      const rawTitle = extractTag(block, "title") ?? "";
+      const title = cleanText(rawTitle);
+      if (!title) continue;
 
-    const media =
-      safeUrl(getAttr(en, "media:content", "url")) ||
-      safeUrl(getAttr(en, "media:thumbnail", "url")) ||
-      extractFirstImageFromHtml(getTag(en, "summary"));
+      const href = extractAttr(block, "link", "href");
+      const link = cleanText(href ?? "");
+      const image = extractFirstImage(block);
 
-    if (title) out.push({ title, url: link, source, image: media });
+      items.push({
+        title,
+        url: link || undefined,
+        source: sourceName,
+        image,
+      });
+    }
   }
 
-  return out;
+  return items;
 }
 
-function domainFromUrl(url?: string) {
-  if (!url) return undefined;
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return undefined;
-  }
-}
+async function fetchWithTimeout(url: string, ms: number) {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), ms);
 
-async function fetchWithTimeout(url: string, timeoutMs = 5500) {
-  const ac = new AbortController();
-  const id = setTimeout(() => ac.abort(), timeoutMs);
   try {
     const res = await fetch(url, {
-      signal: ac.signal,
       cache: "no-store",
+      signal: controller.signal,
       headers: {
-        // alguns sites bloqueiam UA vazia
-        "user-agent":
-          "Mozilla/5.0 (compatible; TGroupSignage/1.0; +https://vercel.app)",
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        // ajuda alguns RSS que bloqueiam user-agent “vazio”
+        "user-agent": "tgroup-tv-signage/1.0",
+        accept: "application/rss+xml, application/xml;q=0.9, text/xml;q=0.8, */*;q=0.7",
       },
     });
-    const text = await res.text();
-    return { ok: res.ok, text };
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    const ct = (res.headers.get("content-type") ?? "").toLowerCase();
+
+    // tenta pegar charset (resolve o bug de acento na maioria dos casos)
+    let encoding: BufferEncoding = "utf8";
+    const m = ct.match(/charset=([^;]+)/i);
+    const charset = (m?.[1] ?? "").trim();
+
+    if (charset.includes("iso-8859-1") || charset.includes("latin1") || charset.includes("windows-1252")) {
+      encoding = "latin1";
+    }
+
+    // fallback: se o XML declarar encoding
+    if (encoding === "utf8") {
+      const head = buf.slice(0, 200).toString("utf8");
+      const mx = head.match(/encoding="([^"]+)"/i);
+      const decl = (mx?.[1] ?? "").toLowerCase();
+      if (decl.includes("iso-8859-1") || decl.includes("latin1") || decl.includes("windows-1252")) encoding = "latin1";
+    }
+
+    const text = buf.toString(encoding);
+    return { ok: res.ok, status: res.status, text };
   } finally {
     clearTimeout(id);
   }
 }
 
-async function enrichOgImages(items: NewsItem[], maxFetch = 6) {
-  let count = 0;
-  for (const it of items) {
-    if (it.image) continue;
-    if (!it.url) continue;
-    if (count >= maxFetch) break;
-
-    count += 1;
-    try {
-      const { ok, text } = await fetchWithTimeout(it.url, 4500);
-      if (!ok) continue;
-      const og =
-        text.match(/<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1] ||
-        text.match(/<meta[^>]+name=["']og:image["'][^>]+content=["']([^"']+)["']/i)?.[1];
-
-      const img = safeUrl(og ? decodeHtml(og) : undefined);
-      if (img) it.image = img;
-    } catch {
-      // ignora
-    }
-  }
-}
-
-function dedupe(items: NewsItem[]) {
-  const seen = new Set<string>();
-  const out: NewsItem[] = [];
-  for (const it of items) {
-    const key = (it.title ?? "").toLowerCase().slice(0, 140);
-    if (!key) continue;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(it);
-  }
-  return out;
-}
-
 export async function GET() {
-  // cache 3 min
-  const now = Date.now();
-  if (CACHE && now - CACHE.ts < 3 * 60_000 && CACHE.items.length) {
-    return NextResponse.json({ ok: true, items: CACHE.items });
+  // cache simples (serverless-friendly)
+  if (CACHE && Date.now() - CACHE.ts < CACHE_MS) {
+    return NextResponse.json(
+      { ok: true, items: CACHE.items },
+      { headers: { "cache-control": "no-store" } }
+    );
   }
-
-  const feedsEnv = process.env.NEWS_RSS_FEEDS;
-  const feeds = (feedsEnv ? feedsEnv.split(",").map((s) => s.trim()).filter(Boolean) : DEFAULT_FEEDS).slice(0, 6);
 
   const all: NewsItem[] = [];
-  for (const f of feeds) {
-    try {
-      const { ok, text } = await fetchWithTimeout(f, 6500);
-      if (!ok) continue;
-      const parsed = parseRssItems(text);
-      all.push(...parsed.slice(0, 10));
-    } catch {
-      // ignora feed ruim
-    }
-  }
 
-  // normaliza source
-  const normalized = all.map((it) => ({
-    ...it,
-    source: it.source ?? domainFromUrl(it.url),
-  }));
+  await Promise.all(
+    FEEDS.map(async (f) => {
+      try {
+        const r = await fetchWithTimeout(f.url, 6000);
+        if (!r.ok || !r.text) return;
+        const items = parseRss(r.text, f.name);
+        all.push(...items);
+      } catch {
+        // ignora feed que falhar; não derruba o endpoint
+      }
+    })
+  );
 
-  // tira lixo e dup
-  let items = dedupe(normalized)
-    .filter((x) => x.title && x.title.length > 12)
-    .slice(0, 18);
+  // remove duplicados por título (e mantém os primeiros)
+  const seen = new Set<string>();
+  const deduped = all.filter((it) => {
+    const key = (it.title ?? "").toLowerCase().trim();
+    if (!key) return false;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 
-  // OG image leve
-  await enrichOgImages(items, 6);
+  const items = deduped.slice(0, 20);
+  CACHE = { ts: Date.now(), items };
 
-  // se ainda veio vazio, fallback (pra não ficar “carregando” eternamente)
-  if (!items.length) {
-    items = [
-      { title: "T.Group • News • Sem carregamento agora (feeds instáveis).", source: "T.Group" },
-      { title: "Sugestão: revisar feeds RSS no env NEWS_RSS_FEEDS.", source: "T.Group" },
-    ];
-  }
-
-  CACHE = { ts: now, items };
-
-  return NextResponse.json({ ok: true, items });
+  return NextResponse.json({ ok: true, items }, { headers: { "cache-control": "no-store" } });
 }
