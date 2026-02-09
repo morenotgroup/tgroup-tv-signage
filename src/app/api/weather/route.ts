@@ -31,27 +31,29 @@ function codeToDescPt(code: number) {
   return "São Paulo";
 }
 
-function num(v: any): number | undefined {
-  const n = Number(v);
-  return Number.isFinite(n) ? n : undefined;
+function pad2(n: number) {
+  return String(n).padStart(2, "0");
+}
+
+function weekdayPtShortFromISO(iso: string) {
+  const d = new Date(iso);
+  const w = d.toLocaleDateString("pt-BR", { weekday: "short" });
+  return w.replace(".", "").toLowerCase();
 }
 
 export async function GET() {
   const cfg = SIGNAGE_CONFIG as any;
 
-  // Perdizes (aprox) — se quiser precisão total, setar env WEATHER_LAT / WEATHER_LON
-  const defaultLat = -23.5349;
-  const defaultLon = -46.6760;
-
+  // Perdizes aproximado (se não setar env/config, já fica aceitável)
   const latitude =
     (process.env.WEATHER_LAT && Number(process.env.WEATHER_LAT)) ||
     (typeof cfg.latitude === "number" ? cfg.latitude : undefined) ||
-    defaultLat;
+    -23.545;
 
   const longitude =
     (process.env.WEATHER_LON && Number(process.env.WEATHER_LON)) ||
     (typeof cfg.longitude === "number" ? cfg.longitude : undefined) ||
-    defaultLon;
+    -46.676;
 
   const url =
     "https://api.open-meteo.com/v1/forecast" +
@@ -74,60 +76,62 @@ export async function GET() {
 
     const json = await res.json();
 
-    const tempC = num(json?.current?.temperature_2m);
-    const code = num(json?.current?.weather_code);
+    const tempC = Number(json?.current?.temperature_2m);
+    const code = Number(json?.current?.weather_code);
 
-    const hourlyTime: string[] = Array.isArray(json?.hourly?.time) ? json.hourly.time : [];
-    const hourlyTemp: any[] = Array.isArray(json?.hourly?.temperature_2m) ? json.hourly.temperature_2m : [];
-    const hourlyCode: any[] = Array.isArray(json?.hourly?.weather_code) ? json.hourly.weather_code : [];
+    // hourly (pega próximas 8 horas a partir do "agora")
+    const hourlyTimes: string[] = json?.hourly?.time ?? [];
+    const hourlyTemps: number[] = json?.hourly?.temperature_2m ?? [];
+    const hourlyCodes: number[] = json?.hourly?.weather_code ?? [];
 
-    const hourly = hourlyTime.slice(0, 96).map((time, i) => {
-      const t = num(hourlyTemp[i]);
-      const c = num(hourlyCode[i]);
+    const now = new Date();
+    const nowHourIsoPrefix = `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}T${pad2(now.getHours())}:`;
+
+    let startIdx = hourlyTimes.findIndex((t) => t.startsWith(nowHourIsoPrefix));
+    if (startIdx < 0) startIdx = 0;
+
+    const hourly = Array.from({ length: 8 }).map((_, i) => {
+      const idx = startIdx + i;
+      const t = hourlyTimes[idx];
+      const hh = t ? t.slice(11, 16) : "--:--";
+      const tc = Number(hourlyTemps[idx]);
+      const wc = Number(hourlyCodes[idx]);
       return {
-        time,
-        tempC: t,
-        description: c !== undefined ? codeToDescPt(c) : undefined,
-        emoji: c !== undefined ? codeToEmoji(c) : undefined,
+        timeLabel: hh,
+        tempC: Number.isFinite(tc) ? tc : undefined,
+        emoji: Number.isFinite(wc) ? codeToEmoji(wc) : "⛅️",
+        description: Number.isFinite(wc) ? codeToDescPt(wc) : "São Paulo",
       };
     });
 
-    const dailyTime: string[] = Array.isArray(json?.daily?.time) ? json.daily.time : [];
-    const dailyMax: any[] = Array.isArray(json?.daily?.temperature_2m_max) ? json.daily.temperature_2m_max : [];
-    const dailyMin: any[] = Array.isArray(json?.daily?.temperature_2m_min) ? json.daily.temperature_2m_min : [];
-    const dailyCode: any[] = Array.isArray(json?.daily?.weather_code) ? json.daily.weather_code : [];
+    // daily (próximos 5 dias)
+    const dailyTimes: string[] = json?.daily?.time ?? [];
+    const dailyMax: number[] = json?.daily?.temperature_2m_max ?? [];
+    const dailyMin: number[] = json?.daily?.temperature_2m_min ?? [];
+    const dailyCodes: number[] = json?.daily?.weather_code ?? [];
 
-    const daily = dailyTime.slice(0, 7).map((date, i) => {
-      const maxC = num(dailyMax[i]);
-      const minC = num(dailyMin[i]);
-      const c = num(dailyCode[i]);
+    const daily = dailyTimes.slice(0, 5).map((t, i) => {
+      const maxC = Number(dailyMax[i]);
+      const minC = Number(dailyMin[i]);
+      const wc = Number(dailyCodes[i]);
       return {
-        date,
-        maxC,
-        minC,
-        description: c !== undefined ? codeToDescPt(c) : undefined,
-        emoji: c !== undefined ? codeToEmoji(c) : undefined,
+        dayLabel: weekdayPtShortFromISO(t),
+        maxC: Number.isFinite(maxC) ? maxC : undefined,
+        minC: Number.isFinite(minC) ? minC : undefined,
+        emoji: Number.isFinite(wc) ? codeToEmoji(wc) : "⛅️",
+        description: Number.isFinite(wc) ? codeToDescPt(wc) : "São Paulo",
       };
     });
 
     return NextResponse.json(
       {
         ok: true,
-        // backward compat
-        tempC: tempC,
-        description: code !== undefined ? codeToDescPt(code) : "São Paulo",
-        emoji: code !== undefined ? codeToEmoji(code) : "⛅️",
-
-        current: {
-          tempC: tempC,
-          description: code !== undefined ? codeToDescPt(code) : "São Paulo",
-          emoji: code !== undefined ? codeToEmoji(code) : "⛅️",
-        },
+        tempC: Number.isFinite(tempC) ? tempC : undefined,
+        description: Number.isFinite(code) ? codeToDescPt(code) : "São Paulo",
+        emoji: Number.isFinite(code) ? codeToEmoji(code) : "⛅️",
         hourly,
         daily,
         source: "open_meteo",
-        latitude,
-        longitude,
       },
       { headers: { "Cache-Control": "s-maxage=600, stale-while-revalidate=1200" } }
     );
