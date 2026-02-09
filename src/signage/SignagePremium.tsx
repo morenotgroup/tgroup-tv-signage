@@ -1,4 +1,3 @@
-// src/signage/SignagePremium.tsx
 "use client";
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -22,13 +21,12 @@ function formatDatePtBR(now: Date) {
   }).format(now);
 }
 
-function formatMonthPtBR(monthIndex: number, year: number) {
-  const d = new Date(year, monthIndex, 1);
+function formatMonthPtBR(monthIndex: number) {
+  const d = new Date(2026, monthIndex, 1);
   return new Intl.DateTimeFormat("pt-BR", { month: "long" }).format(d);
 }
 
 type WeatherLike = {
-  ok?: boolean;
   tempC?: number;
   temp?: number;
   temperature?: number;
@@ -59,14 +57,6 @@ function readTempC(weather: WeatherLike | null): number | null {
   return Number.isFinite(v) ? v : null;
 }
 
-async function safeJson(res: Response) {
-  try {
-    return await res.json();
-  } catch {
-    return null;
-  }
-}
-
 export default function SignagePremium() {
   const [now, setNow] = useState(() => new Date());
   const [scene, setScene] = useState(0);
@@ -87,7 +77,6 @@ export default function SignagePremium() {
 
   const monthIndex = now.getMonth(); // 0..11
   const monthKey = useMemo(() => pad2(monthIndex + 1), [monthIndex]);
-  const year = now.getFullYear();
 
   // clock tick
   useEffect(() => {
@@ -95,23 +84,21 @@ export default function SignagePremium() {
     return () => clearInterval(t);
   }, []);
 
-  // ===== Fetch WEATHER (separado) =====
+  // fetch weather/news
   useEffect(() => {
     let alive = true;
 
-    async function refreshWeather() {
+    async function refreshAll() {
       try {
-        const res = await fetch("/api/weather", { cache: "no-store" });
-        const json = await safeJson(res);
+        const [w, n] = await Promise.allSettled([
+          fetch("/api/weather", { cache: "no-store" }).then((r) => r.json()),
+          fetch("/api/news", { cache: "no-store" }).then((r) => r.json()),
+        ]);
+
         if (!alive) return;
 
-        if (res.ok) {
-          setWeather((json as WeatherLike) || null);
-        } else {
-          // mantém UI estável: se der erro, não “zera” tudo agressivo
-          setWeather((prev) => prev ?? null);
-        }
-
+        if (w.status === "fulfilled") setWeather(w.value || null);
+        if (n.status === "fulfilled") setHeadlines(safeHeadlines(n.value));
         setLastSync(new Date());
       } catch {
         if (!alive) return;
@@ -119,91 +106,34 @@ export default function SignagePremium() {
       }
     }
 
-    void refreshWeather();
+    void refreshAll();
 
-    const wt = setInterval(
-      refreshWeather,
-      Number.isFinite(Number(SIGNAGE_CONFIG.refreshWeatherMs))
-        ? Number(SIGNAGE_CONFIG.refreshWeatherMs)
-        : 10 * 60 * 1000
-    );
+    const wt = setInterval(refreshAll, SIGNAGE_CONFIG.refreshWeatherMs ?? 10 * 60 * 1000);
+    const nt = setInterval(refreshAll, SIGNAGE_CONFIG.refreshNewsMs ?? 20 * 60 * 1000);
 
     return () => {
       alive = false;
       clearInterval(wt);
-    };
-  }, []);
-
-  // ===== Fetch NEWS (separado) =====
-  useEffect(() => {
-    let alive = true;
-
-    async function refreshNews() {
-      try {
-        const res = await fetch("/api/news", { cache: "no-store" });
-        const json = await safeJson(res);
-        if (!alive) return;
-
-        if (res.ok) {
-          setHeadlines(safeHeadlines(json));
-        } else {
-          setHeadlines((prev) => prev ?? []);
-        }
-
-        setLastSync(new Date());
-      } catch {
-        if (!alive) return;
-        setLastSync(new Date());
-      }
-    }
-
-    void refreshNews();
-
-    const nt = setInterval(
-      refreshNews,
-      Number.isFinite(Number(SIGNAGE_CONFIG.refreshNewsMs))
-        ? Number(SIGNAGE_CONFIG.refreshNewsMs)
-        : 20 * 60 * 1000
-    );
-
-    return () => {
-      alive = false;
       clearInterval(nt);
     };
   }, []);
 
-  // ===== Wake Lock (best-effort + re-lock on visibility) =====
+  // wake lock (best-effort)
   useEffect(() => {
-    let cancelled = false;
-
     async function lock() {
       try {
         // @ts-ignore
-        if (!tvMode) return;
-        // @ts-ignore
-        if (!("wakeLock" in navigator)) return;
-        // @ts-ignore
-        const wl = await navigator.wakeLock.request("screen");
-        if (cancelled) return;
-        wakeLockRef.current = wl;
+        if ("wakeLock" in navigator && tvMode) {
+          // @ts-ignore
+          wakeLockRef.current = await navigator.wakeLock.request("screen");
+        }
       } catch {
         // ignore
       }
     }
-
-    function onVisibility() {
-      if (!tvMode) return;
-      if (document.visibilityState === "visible") {
-        void lock();
-      }
-    }
-
     void lock();
-    document.addEventListener("visibilitychange", onVisibility);
 
     return () => {
-      cancelled = true;
-      document.removeEventListener("visibilitychange", onVisibility);
       try {
         wakeLockRef.current?.release?.();
       } catch {}
@@ -217,13 +147,10 @@ export default function SignagePremium() {
 
     const list = SIGNAGE_CONFIG.birthdayPosters || [];
 
-    const exact =
-      list.find((x) => x.mmdd === mmddKey) ||
-      list.find((x) => x.mmdd === ddmmKey);
-
+    const exact = list.find((x) => x.mmdd === mmddKey) || list.find((x) => x.mmdd === ddmmKey);
     if (exact) return exact;
 
-    // Sem aniversariante no dia → faz rotação do mês
+    // Sem aniversariante no dia → rotação do mês
     const monthList = list.filter((x) => x.mmdd.startsWith(monthKey) || x.mmdd.endsWith(monthKey));
     if (monthList.length) {
       const i = Math.floor((now.getTime() / (SIGNAGE_CONFIG.sceneDurationMs || 14000)) % monthList.length);
@@ -428,9 +355,7 @@ export default function SignagePremium() {
             <div className="tg_sceneInner tg_welcome">
               <div className="tg_welcomeHeader">
                 <div className="tg_welcomeTitle">Chegadas do mês</div>
-                <div className="tg_welcomeSub">
-                  {formatMonthPtBR(monthIndex, year)} • nova energia no ar ✨
-                </div>
+                <div className="tg_welcomeSub">{formatMonthPtBR(monthIndex)} • nova energia no ar ✨</div>
               </div>
 
               <div
@@ -450,8 +375,8 @@ export default function SignagePremium() {
               </div>
 
               <div className="tg_welcomeHint">
-                Dica GC: quer trocar as artes do mês? Só subir em <span className="tg_code">/public/signage/welcome</span> e atualizar o{" "}
-                <span className="tg_code">welcomePosters</span> no config.
+                Dica GC: pra trocar as artes do mês, é só subir em <span className="tg_code">/public/signage/welcome</span> e
+                atualizar o <span className="tg_code">welcomePosters</span> no config.
               </div>
             </div>
           </div>
@@ -495,7 +420,6 @@ export default function SignagePremium() {
           font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
         }
 
-        /* BACKDROP */
         .tg_backdrop {
           position: absolute;
           inset: -40%;
@@ -513,7 +437,6 @@ export default function SignagePremium() {
           to   { transform: translate3d( 1%,  1%, 0) scale(1.04); }
         }
 
-        /* TOP HUD */
         .tg_top {
           position: relative;
           z-index: 20;
@@ -558,7 +481,6 @@ export default function SignagePremium() {
         .tg_time { font-size: 54px; font-weight: 900; letter-spacing: -0.04em; line-height: 1; }
         .tg_date { opacity: 0.75; font-size: 14px; text-transform: lowercase; }
 
-        /* TV HUD */
         .tg_tvHud {
           position: absolute;
           top: 92px;
@@ -587,7 +509,6 @@ export default function SignagePremium() {
           cursor: pointer;
         }
 
-        /* STAGE + SCENES */
         .tg_stage {
           position: relative;
           z-index: 10;
@@ -673,7 +594,6 @@ export default function SignagePremium() {
           opacity: 0.7;
         }
 
-        /* Weather */
         .tg_weatherRow {
           margin-top: 22px;
           display: flex;
@@ -695,7 +615,6 @@ export default function SignagePremium() {
           opacity: 0.78;
         }
 
-        /* News */
         .tg_news {
           margin-top: 18px;
           display: grid;
@@ -725,7 +644,6 @@ export default function SignagePremium() {
           opacity: 0.92;
         }
 
-        /* Welcome scene */
         .tg_welcome { position: relative; }
         .tg_welcomeHeader {
           display: flex;
@@ -769,7 +687,10 @@ export default function SignagePremium() {
           backdrop-filter: blur(14px);
         }
 
-        @keyframes tg_welcomeIn { to { opacity: 1; transform: translateY(0) scale(1); } }
+        @keyframes tg_welcomeIn {
+          to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+
         @keyframes tg_cardFloat {
           from { transform: translateY(0) scale(1); }
           to   { transform: translateY(-8px) scale(1.01); }
@@ -812,7 +733,11 @@ export default function SignagePremium() {
           font-size: 14px;
         }
 
-        .tg_welcomeHint { margin-top: 14px; font-size: 12px; opacity: 0.7; }
+        .tg_welcomeHint {
+          margin-top: 14px;
+          font-size: 12px;
+          opacity: 0.7;
+        }
         .tg_code {
           font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
           font-size: 12px;
@@ -822,8 +747,11 @@ export default function SignagePremium() {
           background: rgba(255,255,255,0.06);
         }
 
-        /* Footer premium */
-        .tg_bottom { position: relative; z-index: 15; padding: 14px 28px 24px; }
+        .tg_bottom {
+          position: relative;
+          z-index: 15;
+          padding: 14px 28px 24px;
+        }
 
         .tg_footer {
           display: grid;
@@ -916,8 +844,14 @@ export default function SignagePremium() {
           width: 70px;
           pointer-events: none;
         }
-        .tg_leftFade { left: 0; background: linear-gradient(90deg, rgba(0,0,0,0.65), transparent); }
-        .tg_rightFade { right: 0; background: linear-gradient(270deg, rgba(0,0,0,0.65), transparent); }
+        .tg_leftFade {
+          left: 0;
+          background: linear-gradient(90deg, rgba(0,0,0,0.65), transparent);
+        }
+        .tg_rightFade {
+          right: 0;
+          background: linear-gradient(270deg, rgba(0,0,0,0.65), transparent);
+        }
 
         .tg_footerMeta {
           display: inline-flex;
@@ -937,7 +871,6 @@ export default function SignagePremium() {
           white-space: nowrap;
         }
 
-        /* Responsive */
         @media (max-width: 980px) {
           .tg_time { font-size: 44px; }
           .tg_bigTitle { font-size: 46px; }
