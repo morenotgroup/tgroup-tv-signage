@@ -1089,38 +1089,18 @@ export default function SignageV2() {
   );
 }
 
-function NewsCardV2({ item, featured, compact }: { item: NewsItem; featured?: boolean; compact?: boolean }) {
-  const domain = domainFromUrl(item.url);
-  const favicon = googleFavicon(domain);
-  const title = normalizeText(item.title);
-
-  const mediaSrc = item.image || favicon;
-
-  return (
-    <article className={`tg_newsCardV2 ${featured ? "featured" : ""} ${compact ? "compact" : ""}`}>
-      <div className="tg_newsBg">
-        {mediaSrc ? (
-          // eslint-disable-next-line @next/next/no-img-element
-          <img className="tg_newsBgImg" src={mediaSrc} alt="" />
-        ) : null}
-        <div className="tg_newsBgShade" />
+<div className="tg_newsGridV2 tg_newsGridUniform">
+  {(news.length ? news.slice(0, 6) : Array.from({ length: 6 }).map(() => null)).map((it, idx) =>
+    it ? (
+      <NewsCardV2 key={`${it.title}-${idx}`} item={it} />
+    ) : (
+      <div key={`sk-${idx}`} className="tg_newsCardV2 skeleton">
+        <div className="tg_skeletonTitle">Carregando notícias…</div>
+        <div className="tg_skeletonSub">aguenta só um segundo</div>
       </div>
-
-      <div className="tg_newsOverlay">
-        <div className="tg_newsPill">
-          <span className="tg_newsPillDot" aria-hidden />
-          <span className="tg_newsPillText">{item.source ?? domain ?? "notícias"}</span>
-        </div>
-
-        <div className="tg_newsTitleV2">{title}</div>
-
-        <div className="tg_newsMetaV2">
-          {domain ? <span className="tg_newsDomainV2">{domain}</span> : <span className="tg_newsDomainV2">Brasil</span>}
-        </div>
-      </div>
-    </article>
-  );
-}
+    )
+  )}
+</div>
 
 /** Ícones vetoriais simples, leves e bonitos (sem dependência externa) */
 function AgendaIcon({ kind }: { kind: AgendaEvent["icon"] }) {
