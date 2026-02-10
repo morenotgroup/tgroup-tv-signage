@@ -632,48 +632,44 @@ export default function SignageV2() {
 
             {/* Layout que você curtiu: Missão, Visão, Valores — agora preenchendo melhor a TV */}
             <div className="tg_welcomeCard">
-              <div className="tg_welcomeArt" aria-hidden>
-                <div className="blob b1" />
-                <div className="blob b2" />
-                <div className="blob b3" />
-                <div className="grid" />
-                <div className="tg_welcomeStamp">Recepção</div>
-              </div>
+  <div className="tg_aboutWrap tg_aboutWrapSolo">
+    <div className="tg_aboutHeader">
+      <span className="tg_pill">SOBRE A GENTE</span>
+      <span className="tg_aboutHint">entretenimento • live marketing • performance • tecnologia</span>
+    </div>
 
-              <div className="tg_aboutWrap">
-                <div className="tg_aboutHeader">
-                  <span className="tg_pill">SOBRE A GENTE</span>
-                  <span className="tg_aboutHint">entretenimento • live marketing • performance • tecnologia</span>
-                </div>
+    <div className="tg_aboutCards">
+      <div className="tg_aboutCard mission">
+        <div className="tg_aboutLabel">Missão</div>
+        <div className="tg_aboutText">{about.mission}</div>
+        <div className="tg_aboutMini">Do briefing ao aplauso — com execução impecável.</div>
+      </div>
 
-                <div className="tg_aboutCards">
-                  <div className="tg_aboutCard mission">
-                    <div className="tg_aboutLabel">Missão</div>
-                    <div className="tg_aboutText">{about.mission}</div>
-                    <div className="tg_aboutMini">Do briefing ao aplauso — com execução impecável.</div>
-                  </div>
+      <div className="tg_aboutCard vision">
+        <div className="tg_aboutLabel">Visão</div>
+        <div className="tg_aboutText">{about.vision}</div>
+        <div className="tg_aboutMini">Performance real + tecnologia, sem perder o brilho.</div>
+      </div>
 
-                  <div className="tg_aboutCard vision">
-                    <div className="tg_aboutLabel">Visão</div>
-                    <div className="tg_aboutText">{about.vision}</div>
-                    <div className="tg_aboutMini">Performance real + tecnologia, sem perder o brilho.</div>
-                  </div>
+      <div className="tg_aboutCard values">
+        <div className="tg_aboutLabel">Valores</div>
+        <ul className="tg_values">
+          {about.values.map((v: string) => (
+            <li key={v} className="tg_value">
+              <span className="check" aria-hidden>✓</span>
+              <span>{v}</span>
+            </li>
+          ))}
+        </ul>
+        <div className="tg_aboutMini">Cultura aqui não é frase bonita — é operação.</div>
+      </div>
+    </div>
 
-                  <div className="tg_aboutCard values">
-                    <div className="tg_aboutLabel">Valores</div>
-                    <ul className="tg_values">
-                      {about.values.map((v: string) => (
-                        <li key={v} className="tg_value">
-                          <span className="check" aria-hidden>
-                            ✓
-                          </span>
-                          <span>{v}</span>
-                        </li>
-                      ))}
-                    </ul>
-                    <div className="tg_aboutMini">Cultura aqui não é frase bonita — é operação.</div>
-                  </div>
-                </div>
+    <div className="tg_welcomeFooter">
+      <span className="tg_mini">{about.tagline}</span>
+    </div>
+  </div>
+</div>
 
                 <div className="tg_welcomeFooter">
                   <span className="tg_mini">{about.tagline}</span>
