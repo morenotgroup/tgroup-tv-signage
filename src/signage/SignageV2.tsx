@@ -1901,86 +1901,47 @@ function GlobalStyles() {
         gap: 12px;
       }
 
-      .tg_newsCardV2 {
-        position: relative;
-        border-radius: 22px;
-        overflow: hidden;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(255, 255, 255, 0.03);
-        min-height: 160px;
-      }
-      .tg_newsCardV2.featured {
-        min-height: 100%;
-      }
-      .tg_newsCardV2.compact {
-        min-height: 140px;
-      }
-      .tg_newsBg {
-        position: absolute;
-        inset: 0;
-      }
-      .tg_newsBgImg {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        filter: saturate(1.05) contrast(1.03);
-        transform: scale(1.03);
-      }
-      .tg_newsBgShade {
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(90deg, rgba(0,0,0,0.72), rgba(0,0,0,0.25));
-      }
-      .tg_newsOverlay {
-        position: relative;
-        z-index: 1;
-        padding: 16px;
-        height: 100%;
-        display: flex;
-        flex-direction: column;
-        justify-content: flex-end;
-        gap: 10px;
-      }
-      .tg_newsPill {
-        align-self: flex-start;
-        display: inline-flex;
-        gap: 8px;
-        align-items: center;
-        padding: 8px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(255,255,255,0.12);
-        background: rgba(0,0,0,0.22);
-        backdrop-filter: blur(10px);
-        font-weight: 950;
-        font-size: 12px;
-      }
-      .tg_newsPillDot {
-        width: 8px;
-        height: 8px;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.95);
-        opacity: 0.9;
-      }
-      .tg_newsTitleV2 {
-        font-weight: 950;
-        letter-spacing: -0.03em;
-        font-size: 18px;
-        line-height: 1.1;
-        display: -webkit-box;
-        -webkit-line-clamp: 3;
-        -webkit-box-orient: vertical;
-        overflow: hidden;
-      }
-      .tg_newsCardV2.featured .tg_newsTitleV2 {
-        font-size: 26px;
-        -webkit-line-clamp: 5;
-      }
-      .tg_newsMetaV2 {
-        opacity: 0.85;
-        font-size: 12px;
-        font-weight: 800;
-      }
-      .tg_newsDomainV2 { opacity: 0.9; }
+      .tg_newsGridV2.tg_newsGridUniform {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.tg_newsCardV2 {
+  position: relative;
+  border-radius: 22px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  background: rgba(255, 255, 255, 0.03);
+  height: 100%;
+  min-height: 260px;
+}
+
+.tg_root.tv .tg_newsCardV2 {
+  min-height: 300px;
+}
+
+.tg_newsCardV2.skeleton {
+  display: grid;
+  place-items: center;
+  text-align: center;
+}
+
+.tg_skeletonTitle {
+  font-weight: 950;
+  letter-spacing: -0.03em;
+  font-size: 18px;
+}
+
+.tg_skeletonSub {
+  opacity: 0.75;
+  font-size: 13px;
+  font-weight: 700;
+  margin-top: 6px;
+}
 
       /* Agenda GC */
       .tg_agendaGrid {
