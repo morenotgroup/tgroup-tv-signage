@@ -1406,13 +1406,13 @@ function GlobalStyles() {
 
       /* Welcome — agora “enche” a tela */
       .tg_welcomeCard {
-        display: grid;
-        grid-template-columns: 32% 1fr;
-        gap: 18px;
-        align-items: stretch;
-        flex: 1;
-        min-height: 0;
-      }
+  display: grid;
+  grid-template-columns: 1fr; /* era 32% 1fr */
+  gap: 18px;
+  align-items: stretch;
+  flex: 1;
+  min-height: 0;
+}
 
       .tg_welcomeArt {
         position: relative;
@@ -1477,6 +1477,30 @@ function GlobalStyles() {
         flex-direction: column;
         min-height: 0;
       }
+
+      .tg_aboutWrapSolo {
+  height: 100%;
+}
+
+.tg_aboutCards {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-areas:
+    "mission vision"
+    "values values";
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+}
+
+.tg_aboutCard.mission { grid-area: mission; }
+.tg_aboutCard.vision { grid-area: vision; }
+.tg_aboutCard.values { grid-area: values; }
+
+.tg_aboutCard.values .tg_values {
+  grid-template-columns: 1fr 1fr; /* valores em 2 colunas */
+}
 
       .tg_aboutHeader {
         display: flex;
@@ -2314,9 +2338,13 @@ function GlobalStyles() {
 
       /* TV mode: deixa MAIS “TV-friendly”, não menor */
       .tg_root.tv .tg_time { font-size: 64px; }
-      .tg_root.tv .tg_title { font-size: 58px; }
-      .tg_root.tv .tg_scene { padding: 30px; }
-      .tg_root.tv .tg_aboutText { font-size: 28px; }
+.tg_root.tv .tg_title { font-size: 58px; }
+.tg_root.tv .tg_scene { padding: 30px; }
+
+.tg_root.tv .tg_aboutText { font-size: 34px; }
+.tg_root.tv .tg_aboutLabel { font-size: 14px; }
+.tg_root.tv .tg_value { font-size: 16px; }
+.tg_root.tv .tg_aboutCard { padding: 22px 20px; }
 
       /* auto-otimização quando a tela for grande (TV) */
       @media (min-width: 1500px) and (min-height: 800px) {
