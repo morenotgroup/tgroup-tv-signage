@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { SIGNAGE_CONFIG } from "@/config";
 import MusicDock from "@/components/MusicDock";
@@ -135,11 +135,6 @@ function monthNamePt(monthIndex0: number) {
   return months[monthIndex0] ?? "mês";
 }
 
-function weekdayPtShort(d: Date) {
-  const w = d.toLocaleDateString("pt-BR", { weekday: "short" });
-  return w.replace(".", "").toLowerCase();
-}
-
 function formatDateLongPt(d: Date) {
   return d.toLocaleDateString("pt-BR", {
     weekday: "long",
@@ -166,7 +161,6 @@ function googleFavicon(domain?: string) {
 /** decodifica entidades HTML e tenta corrigir “mojibake” comum (acentos quebrados) */
 function decodeHtmlEntities(input: string) {
   const s = input ?? "";
-  // básico sem DOM (funciona no client)
   return s
     .replace(/&amp;/g, "&")
     .replace(/&quot;/g, '"')
@@ -179,7 +173,6 @@ function decodeHtmlEntities(input: string) {
 
 function fixMojibake(input: string) {
   const s = input ?? "";
-  // se aparecer “Ã”, “Â” etc, geralmente é UTF-8 lido como latin1
   if (!/[ÃÂ]/.test(s)) return s;
   try {
     // eslint-disable-next-line no-undef
@@ -214,14 +207,16 @@ function useClock(tickMs = 1000) {
 }
 
 function parseLocalDateTime(dateISO: string, timeHHMM: string) {
-  // assume timezone local do device (TV), que pra você é SP
   const [y, m, d] = dateISO.split("-").map((x) => Number(x));
   const [hh, mm] = timeHHMM.split(":").map((x) => Number(x));
   return new Date(y, (m ?? 1) - 1, d ?? 1, hh ?? 0, mm ?? 0, 0, 0);
 }
 
 function formatAgendaWhen(d: Date) {
-  const wd = d.toLocaleDateString("pt-BR", { weekday: "short" }).replace(".", "").toLowerCase();
+  const wd = d
+    .toLocaleDateString("pt-BR", { weekday: "short" })
+    .replace(".", "")
+    .toLowerCase();
   const dd = String(d.getDate()).padStart(2, "0");
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const hh = String(d.getHours()).padStart(2, "0");
@@ -229,20 +224,33 @@ function formatAgendaWhen(d: Date) {
   return `${wd} • ${dd}.${mm} • ${hh}:${mi}`;
 }
 
-function TabLogo({
-  label,
-  tv,
-}: {
-  label: string;
-  tv: boolean;
-}) {
+function TabLogo({ label }: { label: string; tv: boolean }) {
   const key = (label ?? "").toLowerCase();
   const candidates = useMemo(() => {
-    // você tem duplicados — tentamos os “clean” primeiro e caímos pro “logo-”
-    if (key.includes("brands")) return ["/signage/logos/tbrands.png", "/signage/logos/logo-tbrands.png", "/signage/logos/tbrands.svg"];
-    if (key.includes("venues")) return ["/signage/logos/tvenues.png", "/signage/logos/logo-tvenues.png", "/signage/logos/tvenues.svg"];
-    if (key.includes("dreams")) return ["/signage/logos/tdreams.png", "/signage/logos/logo-tdreams.png", "/signage/logos/tdreams.svg"];
-    if (key.includes("youth")) return ["/signage/logos/tyouth.png", "/signage/logos/logo-tyouth.png", "/signage/logos/tyouth.svg"];
+    if (key.includes("brands"))
+      return [
+        "/signage/logos/tbrands.png",
+        "/signage/logos/logo-tbrands.png",
+        "/signage/logos/tbrands.svg",
+      ];
+    if (key.includes("venues"))
+      return [
+        "/signage/logos/tvenues.png",
+        "/signage/logos/logo-tvenues.png",
+        "/signage/logos/tvenues.svg",
+      ];
+    if (key.includes("dreams"))
+      return [
+        "/signage/logos/tdreams.png",
+        "/signage/logos/logo-tdreams.png",
+        "/signage/logos/tdreams.svg",
+      ];
+    if (key.includes("youth"))
+      return [
+        "/signage/logos/tyouth.png",
+        "/signage/logos/logo-tyouth.png",
+        "/signage/logos/tyouth.svg",
+      ];
     return [];
   }, [key]);
 
@@ -287,7 +295,12 @@ export default function SignageV2() {
     [cfg?.refreshNewsMs]
   );
   const refreshBirthdaysMs = useMemo(
-    () => clamp(safeNumber(cfg?.refreshBirthdaysMs, 6 * 60 * 60_000), 60_000, 48 * 60 * 60_000),
+    () =>
+      clamp(
+        safeNumber(cfg?.refreshBirthdaysMs, 6 * 60 * 60_000),
+        60_000,
+        48 * 60 * 60_000
+      ),
     [cfg?.refreshBirthdaysMs]
   );
 
@@ -295,11 +308,11 @@ export default function SignageV2() {
   const [weather, setWeather] = useState<WeatherPayload | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
   const [birthdays, setBirthdays] = useState<BirthdayItem[]>([]);
-  const [arrivals, setArrivals] = useState<Array<{ src: string; label?: string }>>(
+  const [arrivals] = useState<Array<{ src: string; label?: string }>>(
     () => cfg?.welcomePosters ?? cfg?.arrivalsPosters ?? []
   );
 
-  // Agenda GC (pode vir do config; se não vier, usa o fallback que você passou)
+  // Agenda GC (pode vir do config; se não vier, usa o fallback)
   const agendaEvents: AgendaEvent[] = useMemo(() => {
     const fromCfg = cfg?.gcAgendaEvents;
     if (Array.isArray(fromCfg) && fromCfg.length) return fromCfg;
@@ -350,9 +363,7 @@ export default function SignageV2() {
 
   // Cenas (ordem sugerida)
   const scenes: SceneId[] = useMemo(() => {
-    // welcome -> agenda -> arrivals -> birthdays -> weather -> news
     const base: SceneId[] = ["welcome", "agenda", "arrivals", "birthdays", "weather", "news"];
-    // se tiver 5+ chegadas, habilita uma “segunda tela”
     if (arrivals.length > 4) {
       const idx = base.indexOf("arrivals");
       if (idx >= 0) base.splice(idx + 1, 0, "arrivals2");
@@ -363,12 +374,10 @@ export default function SignageV2() {
   const [sceneIndex, setSceneIndex] = useState(0);
   const activeScene = scenes[sceneIndex] ?? "welcome";
 
-  // se mudar número de cenas, garante índice válido
   useEffect(() => {
     setSceneIndex((i) => (i >= scenes.length ? 0 : i));
   }, [scenes.length]);
 
-  // Rotação de telas
   useEffect(() => {
     const id = setInterval(() => {
       setSceneIndex((i) => (i + 1) % scenes.length);
@@ -489,7 +498,10 @@ export default function SignageV2() {
   );
   const dateLong = useMemo(() => formatDateLongPt(now), [now]);
 
-  const locationLabel = useMemo(() => cfg?.locationLabel ?? "Perdizes - São Paulo", [cfg?.locationLabel]);
+  const locationLabel = useMemo(
+    () => cfg?.locationLabel ?? "Perdizes - São Paulo",
+    [cfg?.locationLabel]
+  );
 
   const tempNowLabel = useMemo(() => {
     const t = weather?.tempC;
@@ -501,7 +513,9 @@ export default function SignageV2() {
   const month0 = now.getMonth(); // 0..11
   const month1 = month0 + 1; // 1..12
   const birthdaysThisMonth = useMemo(() => {
-    const filtered = birthdays.filter((b) => b.month === month1 || (!b.month && b.mmdd?.startsWith(pad2(month1))));
+    const filtered = birthdays.filter(
+      (b) => b.month === month1 || (!b.month && b.mmdd?.startsWith(pad2(month1)))
+    );
     const sorted = [...filtered].sort((a, b) => {
       const na = (a.name ?? "").toLocaleLowerCase("pt-BR");
       const nb = (b.name ?? "").toLocaleLowerCase("pt-BR");
@@ -510,7 +524,6 @@ export default function SignageV2() {
     return sorted;
   }, [birthdays, month1]);
 
-  // Duas artes “rodando” na tela (aniversários)
   const [birthdayCarouselIndex, setBirthdayCarouselIndex] = useState(0);
   useEffect(() => {
     if (birthdaysThisMonth.length <= 2) return;
@@ -527,14 +540,13 @@ export default function SignageV2() {
     return [a, b].filter(Boolean);
   }, [birthdaysThisMonth, birthdayCarouselIndex]);
 
-  // About texts (mantém pegada)
+  // About texts
   const about = useMemo(() => {
     const mission =
       cfg?.mission ??
       "Criar experiências memoráveis em entretenimento, eventos e live marketing, com excelência na execução.";
     const vision =
-      cfg?.vision ??
-      "Ser referência em entretenimento e live marketing com performance e tecnologia.";
+      cfg?.vision ?? "Ser referência em entretenimento e live marketing com performance e tecnologia.";
     const values: string[] =
       cfg?.values ?? [
         "Respeito, diversidade e segurança",
@@ -551,17 +563,24 @@ export default function SignageV2() {
   const tabs = useMemo(() => {
     const raw = cfg?.brandTabs;
     if (Array.isArray(raw) && raw.length) {
-      return raw.map((t: any) => (typeof t === "string" ? t : t?.label ?? t?.name ?? "")).filter(Boolean);
+      return raw
+        .map((t: any) => (typeof t === "string" ? t : t?.label ?? t?.name ?? ""))
+        .filter(Boolean);
     }
     return ["BRANDS", "VENUES", "DREAMS", "YOUTH"];
   }, [cfg?.brandTabs]);
 
-  // Logos
-  const logoTGroup = useMemo(() => cfg?.logoTGroup ?? "/signage/logos/tgroup-logo.png", [cfg?.logoTGroup]);
+  const logoTGroup = useMemo(
+    () => cfg?.logoTGroup ?? "/signage/logos/tgroup-logo.png",
+    [cfg?.logoTGroup]
+  );
 
-  // Ticker (usa news, normalizado)
+  // Ticker (usa news)
   const tickerItems = useMemo(() => {
-    const base = news.slice(0, 12).map((n) => normalizeText(n.title)).filter(Boolean);
+    const base = news
+      .slice(0, 12)
+      .map((n) => normalizeText(n.title))
+      .filter(Boolean);
     if (base.length === 0) return ["T.Group • Recepção • Bem-vindas, vindes e vindos"];
     return base;
   }, [news]);
@@ -579,7 +598,9 @@ export default function SignageV2() {
 
   const agendaNext = useMemo(() => {
     const nowTs = now.getTime();
-    const future = agendaSorted.find((ev) => parseLocalDateTime(ev.dateISO, ev.timeHHMM).getTime() >= nowTs - 10 * 60_000);
+    const future = agendaSorted.find(
+      (ev) => parseLocalDateTime(ev.dateISO, ev.timeHHMM).getTime() >= nowTs - 10 * 60_000
+    );
     return future ?? agendaSorted[0];
   }, [agendaSorted, now]);
 
@@ -589,7 +610,6 @@ export default function SignageV2() {
       <header className="tg_header">
         <div className="tg_brand">
           <div className="tg_mark" aria-label="T.Group">
-            {/* IMPORTANTE: tiramos o “T.” pra não ficar por trás do logo */}
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img className="tg_markImg" src={logoTGroup} alt="T.Group" />
           </div>
@@ -630,50 +650,46 @@ export default function SignageV2() {
               </div>
             </div>
 
-            {/* Layout que você curtiu: Missão, Visão, Valores — agora preenchendo melhor a TV */}
-            <div className="tg_welcomeCard">
-  <div className="tg_aboutWrap tg_aboutWrapSolo">
-    <div className="tg_aboutHeader">
-      <span className="tg_pill">SOBRE A GENTE</span>
-      <span className="tg_aboutHint">entretenimento • live marketing • performance • tecnologia</span>
-    </div>
+            {/* ✅ AJUSTE 1: tira o quadro “Recepção” e deixa só Missão/Visão/Valores grande */}
+            <div className="tg_aboutWrap tg_aboutWrapSolo">
+              <div className="tg_aboutHeader">
+                <span className="tg_pill">SOBRE A GENTE</span>
+                <span className="tg_aboutHint">
+                  entretenimento • live marketing • performance • tecnologia
+                </span>
+              </div>
 
-    <div className="tg_aboutCards">
-      <div className="tg_aboutCard mission">
-        <div className="tg_aboutLabel">Missão</div>
-        <div className="tg_aboutText">{about.mission}</div>
-        <div className="tg_aboutMini">Do briefing ao aplauso — com execução impecável.</div>
-      </div>
-
-      <div className="tg_aboutCard vision">
-        <div className="tg_aboutLabel">Visão</div>
-        <div className="tg_aboutText">{about.vision}</div>
-        <div className="tg_aboutMini">Performance real + tecnologia, sem perder o brilho.</div>
-      </div>
-
-      <div className="tg_aboutCard values">
-        <div className="tg_aboutLabel">Valores</div>
-        <ul className="tg_values">
-          {about.values.map((v: string) => (
-            <li key={v} className="tg_value">
-              <span className="check" aria-hidden>✓</span>
-              <span>{v}</span>
-            </li>
-          ))}
-        </ul>
-        <div className="tg_aboutMini">Cultura aqui não é frase bonita — é operação.</div>
-      </div>
-    </div>
-
-    <div className="tg_welcomeFooter">
-      <span className="tg_mini">{about.tagline}</span>
-    </div>
-  </div>
-</div>
-
-                <div className="tg_welcomeFooter">
-                  <span className="tg_mini">{about.tagline}</span>
+              <div className="tg_aboutCards">
+                <div className="tg_aboutCard mission">
+                  <div className="tg_aboutLabel">Missão</div>
+                  <div className="tg_aboutText">{about.mission}</div>
+                  <div className="tg_aboutMini">Do briefing ao aplauso — com execução impecável.</div>
                 </div>
+
+                <div className="tg_aboutCard vision">
+                  <div className="tg_aboutLabel">Visão</div>
+                  <div className="tg_aboutText">{about.vision}</div>
+                  <div className="tg_aboutMini">Performance real + tecnologia, sem perder o brilho.</div>
+                </div>
+
+                <div className="tg_aboutCard values">
+                  <div className="tg_aboutLabel">Valores</div>
+                  <ul className="tg_values">
+                    {about.values.map((v: string) => (
+                      <li key={v} className="tg_value">
+                        <span className="check" aria-hidden>
+                          ✓
+                        </span>
+                        <span>{v}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="tg_aboutMini">Cultura aqui não é frase bonita — é operação.</div>
+                </div>
+              </div>
+
+              <div className="tg_welcomeFooter">
+                <span className="tg_mini">{about.tagline}</span>
               </div>
             </div>
           </section>
@@ -691,7 +707,6 @@ export default function SignageV2() {
             </div>
 
             <div className="tg_agendaGrid">
-              {/* LEFT: Próximo (menor e mais “visual”) */}
               <div className="tg_agendaNext">
                 <div className="tg_agendaNextHeader">
                   <span className="tg_pill">PRÓXIMO</span>
@@ -706,11 +721,17 @@ export default function SignageV2() {
 
                     <div className="tg_agendaNextBody">
                       <div className="tg_agendaNextTitle">{agendaNext.title}</div>
-                      {agendaNext.subtitle ? <div className="tg_agendaNextSub">{agendaNext.subtitle}</div> : null}
+                      {agendaNext.subtitle ? (
+                        <div className="tg_agendaNextSub">{agendaNext.subtitle}</div>
+                      ) : null}
 
                       <div className="tg_agendaNextMeta">
-                        <span className="tg_chipSm">{formatAgendaWhen(parseLocalDateTime(agendaNext.dateISO, agendaNext.timeHHMM))}</span>
-                        {agendaNext.location ? <span className="tg_chipSm">{agendaNext.location}</span> : null}
+                        <span className="tg_chipSm">
+                          {formatAgendaWhen(parseLocalDateTime(agendaNext.dateISO, agendaNext.timeHHMM))}
+                        </span>
+                        {agendaNext.location ? (
+                          <span className="tg_chipSm">{agendaNext.location}</span>
+                        ) : null}
                       </div>
 
                       {Array.isArray(agendaNext.chips) && agendaNext.chips.length ? (
@@ -724,7 +745,6 @@ export default function SignageV2() {
                       ) : null}
                     </div>
 
-                    {/* decoração vetorial (sem poluir) */}
                     <div className="tg_agendaDeco" aria-hidden>
                       <AgendaIcon kind="people" />
                     </div>
@@ -732,14 +752,15 @@ export default function SignageV2() {
                 ) : (
                   <div className="tg_empty">
                     <div className="tg_emptyTitle">Agenda vazia</div>
-                    <div className="tg_emptySub">Suba os eventos do mês e essa tela fica linda automaticamente.</div>
+                    <div className="tg_emptySub">
+                      Suba os eventos do mês e essa tela fica linda automaticamente.
+                    </div>
                   </div>
                 )}
 
                 <div className="tg_agendaFooterNote">Calendário interno — mas com vibe de festival.</div>
               </div>
 
-              {/* RIGHT: Programação do mês */}
               <div className="tg_agendaList">
                 <div className="tg_listTitle">Programação do mês</div>
 
@@ -766,9 +787,7 @@ export default function SignageV2() {
                             {Array.isArray(ev.chips) && ev.chips.length ? (
                               <>
                                 <span className="tg_dotSm">•</span>
-                                <span className="tg_agendaItemChips">
-                                  {ev.chips.slice(0, 3).join(" • ")}
-                                </span>
+                                <span className="tg_agendaItemChips">{ev.chips.slice(0, 3).join(" • ")}</span>
                               </>
                             ) : null}
                           </div>
@@ -804,7 +823,9 @@ export default function SignageV2() {
               {arrivals.length === 0 ? (
                 <div className="tg_empty">
                   <div className="tg_emptyTitle">Sem artes de chegadas no momento</div>
-                  <div className="tg_emptySub">Quando tiver, elas aparecem automaticamente (via config / posters).</div>
+                  <div className="tg_emptySub">
+                    Quando tiver, elas aparecem automaticamente (via config / posters).
+                  </div>
                 </div>
               ) : (
                 arrivals.slice(0, 3).map((p, idx) => (
@@ -834,7 +855,9 @@ export default function SignageV2() {
               {arrivals.length <= 3 ? (
                 <div className="tg_empty">
                   <div className="tg_emptyTitle">Sem segunda tela este mês</div>
-                  <div className="tg_emptySub">Se subirem 5+ artes no mês, essa tela entra automaticamente.</div>
+                  <div className="tg_emptySub">
+                    Se subirem 5+ artes no mês, essa tela entra automaticamente.
+                  </div>
                 </div>
               ) : (
                 arrivals.slice(3, 6).map((p, idx) => (
@@ -865,7 +888,9 @@ export default function SignageV2() {
                 {birthdayShowcase.length === 0 ? (
                   <div className="tg_empty">
                     <div className="tg_emptyTitle">Sem aniversários cadastrados</div>
-                    <div className="tg_emptySub">Se já subiu as artes no GitHub, essa tela passa a preencher sozinha.</div>
+                    <div className="tg_emptySub">
+                      Se já subiu as artes no GitHub, essa tela passa a preencher sozinha.
+                    </div>
                   </div>
                 ) : (
                   <div className="tg_birthdaysCards">
@@ -951,7 +976,9 @@ export default function SignageV2() {
                       {Number.isFinite(Number(weather?.uvNow)) ? (
                         <span className="tg_chipTiny">UV {Math.round(Number(weather?.uvNow))}</span>
                       ) : null}
-                      {weather?.sunsetHHMM ? <span className="tg_chipTiny">Pôr do sol {weather.sunsetHHMM}</span> : null}
+                      {weather?.sunsetHHMM ? (
+                        <span className="tg_chipTiny">Pôr do sol {weather.sunsetHHMM}</span>
+                      ) : null}
                     </div>
                   </div>
                 </div>
@@ -992,13 +1019,14 @@ export default function SignageV2() {
                       <div className="tg_hourTemp">
                         {Number.isFinite(Number(h.tempC)) ? `${Math.round(Number(h.tempC))}°` : "—"}
                       </div>
-                      {Number.isFinite(Number(h.popPct)) ? <div className="tg_hourMini">{`${Math.round(Number(h.popPct))}%`}</div> : null}
+                      {Number.isFinite(Number(h.popPct)) ? (
+                        <div className="tg_hourMini">{`${Math.round(Number(h.popPct))}%`}</div>
+                      ) : null}
                     </div>
                   ))}
                 </div>
               </div>
 
-              {/* BLOCO EXTRA: Alertas + Resumo operacional */}
               <div className="tg_weatherAlerts">
                 <div className="tg_panelTitle">Alertas do dia</div>
                 <div className="tg_alertRow">
@@ -1017,9 +1045,7 @@ export default function SignageV2() {
 
               <div className="tg_weatherSummary">
                 <div className="tg_panelTitle">Resumo operacional</div>
-                <div className="tg_summaryLine">
-                  {weather?.summaryLine ?? "Hoje: —"}
-                </div>
+                <div className="tg_summaryLine">{weather?.summaryLine ?? "Hoje: —"}</div>
               </div>
             </div>
           </section>
@@ -1029,21 +1055,22 @@ export default function SignageV2() {
           <section className="tg_scene">
             <div className="tg_sceneTop">
               <h1 className="tg_title">News</h1>
-              {/* removi as “dicas pequenas” aqui */}
             </div>
 
-            <div className="tg_newsGridV2 tg_newsGridUniform">
-  {(news.length ? news.slice(0, 6) : Array.from({ length: 6 }).map(() => null)).map((it, idx) =>
-    it ? (
-      <NewsCardV2 key={`${it.title}-${idx}`} item={it} />
-    ) : (
-      <div key={`sk-${idx}`} className="tg_newsCardV2 skeleton">
-        <div className="tg_skeletonTitle">Carregando notícias…</div>
-        <div className="tg_skeletonSub">aguenta só um segundo</div>
-      </div>
-    )
-  )}
-</div>
+            {/* ✅ AJUSTE 2: grid UNIFORME (sem destaque) */}
+            <div className="tg_newsGridUniform">
+              {(news.length ? news.slice(0, 6) : Array.from({ length: 6 }).map(() => null)).map(
+                (it, idx) =>
+                  it ? (
+                    <NewsCardV2 key={`${it.title}-${idx}`} item={it} />
+                  ) : (
+                    <div key={`sk-${idx}`} className="tg_newsCardV2 skeleton" />
+                  )
+              )}
+            </div>
+          </section>
+        )}
+      </main>
 
       {/* Footer / Ticker */}
       <footer className="tg_footer">
@@ -1079,7 +1106,6 @@ export default function SignageV2() {
         </div>
       </footer>
 
-      {/* MusicDock */}
       <div className="tg_musicDock">
         <MusicDock />
       </div>
@@ -1089,18 +1115,37 @@ export default function SignageV2() {
   );
 }
 
-<div className="tg_newsGridV2 tg_newsGridUniform">
-  {(news.length ? news.slice(0, 6) : Array.from({ length: 6 }).map(() => null)).map((it, idx) =>
-    it ? (
-      <NewsCardV2 key={`${it.title}-${idx}`} item={it} />
-    ) : (
-      <div key={`sk-${idx}`} className="tg_newsCardV2 skeleton">
-        <div className="tg_skeletonTitle">Carregando notícias…</div>
-        <div className="tg_skeletonSub">aguenta só um segundo</div>
+function NewsCardV2({ item }: { item: NewsItem }) {
+  const domain = domainFromUrl(item.url);
+  const favicon = googleFavicon(domain);
+  const title = normalizeText(item.title);
+  const mediaSrc = item.image || favicon;
+
+  return (
+    <article className="tg_newsCardV2">
+      <div className="tg_newsBg">
+        {mediaSrc ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img className="tg_newsBgImg" src={mediaSrc} alt="" />
+        ) : null}
+        <div className="tg_newsBgShade" />
       </div>
-    )
-  )}
-</div>
+
+      <div className="tg_newsOverlay">
+        <div className="tg_newsPill">
+          <span className="tg_newsPillDot" aria-hidden />
+          <span className="tg_newsPillText">{item.source ?? domain ?? "notícias"}</span>
+        </div>
+
+        <div className="tg_newsTitleV2">{title}</div>
+
+        <div className="tg_newsMetaV2">
+          {domain ? <span className="tg_newsDomainV2">{domain}</span> : <span className="tg_newsDomainV2">Brasil</span>}
+        </div>
+      </div>
+    </article>
+  );
+}
 
 /** Ícones vetoriais simples, leves e bonitos (sem dependência externa) */
 function AgendaIcon({ kind }: { kind: AgendaEvent["icon"] }) {
@@ -1116,56 +1161,56 @@ function AgendaIcon({ kind }: { kind: AgendaEvent["icon"] }) {
     case "volley":
       return (
         <svg {...common}>
-          <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M3.5 10.5c3.5 0 6.5 2 8.5 5.5" stroke="currentColor" strokeWidth="1.6" opacity="0.8"/>
-          <path d="M20.5 13.5c-3.8.2-7.3-1.2-10-4.2" stroke="currentColor" strokeWidth="1.6" opacity="0.8"/>
-          <path d="M9 3.8c.6 3.5 3 6.4 6.8 7.8" stroke="currentColor" strokeWidth="1.6" opacity="0.8"/>
+          <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M3.5 10.5c3.5 0 6.5 2 8.5 5.5" stroke="currentColor" strokeWidth="1.6" opacity="0.8" />
+          <path d="M20.5 13.5c-3.8.2-7.3-1.2-10-4.2" stroke="currentColor" strokeWidth="1.6" opacity="0.8" />
+          <path d="M9 3.8c.6 3.5 3 6.4 6.8 7.8" stroke="currentColor" strokeWidth="1.6" opacity="0.8" />
         </svg>
       );
     case "coffee":
       return (
         <svg {...common}>
-          <path d="M6 8h10v5a5 5 0 0 1-10 0V8Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M16 9h1.5A2.5 2.5 0 0 1 20 11.5 2.5 2.5 0 0 1 17.5 14H16" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M7 20h8" stroke="currentColor" strokeWidth="1.6" opacity="0.7"/>
-          <path d="M9 5c0 1 .8 1.3.8 2.2S9 8.6 9 9" stroke="currentColor" strokeWidth="1.6" opacity="0.6"/>
-          <path d="M12 5c0 1 .8 1.3.8 2.2S12 8.6 12 9" stroke="currentColor" strokeWidth="1.6" opacity="0.6"/>
+          <path d="M6 8h10v5a5 5 0 0 1-10 0V8Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M16 9h1.5A2.5 2.5 0 0 1 20 11.5 2.5 2.5 0 0 1 17.5 14H16" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M7 20h8" stroke="currentColor" strokeWidth="1.6" opacity="0.7" />
+          <path d="M9 5c0 1 .8 1.3.8 2.2S9 8.6 9 9" stroke="currentColor" strokeWidth="1.6" opacity="0.6" />
+          <path d="M12 5c0 1 .8 1.3.8 2.2S12 8.6 12 9" stroke="currentColor" strokeWidth="1.6" opacity="0.6" />
         </svg>
       );
     case "cake":
       return (
         <svg {...common}>
-          <path d="M7 10h10v3a5 5 0 0 1-10 0v-3Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M6 13h12v5H6v-5Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M12 4c1.2 1 .7 2.2 0 3.2-1-1-1.2-2.2 0-3.2Z" fill="currentColor" opacity="0.8"/>
-          <path d="M6 16c1.2-1 2.4-1 3.6 0 1.2 1 2.4 1 3.6 0 1.2-1 2.4-1 3.6 0" stroke="currentColor" strokeWidth="1.6" opacity="0.7"/>
+          <path d="M7 10h10v3a5 5 0 0 1-10 0v-3Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M6 13h12v5H6v-5Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M12 4c1.2 1 .7 2.2 0 3.2-1-1-1.2-2.2 0-3.2Z" fill="currentColor" opacity="0.8" />
+          <path d="M6 16c1.2-1 2.4-1 3.6 0 1.2 1 2.4 1 3.6 0 1.2-1 2.4-1 3.6 0" stroke="currentColor" strokeWidth="1.6" opacity="0.7" />
         </svg>
       );
     case "cheers":
       return (
         <svg {...common}>
-          <path d="M6 3l4 4-2 7H6L4 7l2-4Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M18 3l2 4-2 7h-2l-2-7 4-4Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M10 7l4 0" stroke="currentColor" strokeWidth="1.6" opacity="0.7"/>
-          <path d="M9 21h6" stroke="currentColor" strokeWidth="1.6" opacity="0.7"/>
-          <path d="M12 14v7" stroke="currentColor" strokeWidth="1.6" opacity="0.7"/>
+          <path d="M6 3l4 4-2 7H6L4 7l2-4Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M18 3l2 4-2 7h-2l-2-7 4-4Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M10 7l4 0" stroke="currentColor" strokeWidth="1.6" opacity="0.7" />
+          <path d="M9 21h6" stroke="currentColor" strokeWidth="1.6" opacity="0.7" />
+          <path d="M12 14v7" stroke="currentColor" strokeWidth="1.6" opacity="0.7" />
         </svg>
       );
     case "people":
       return (
         <svg {...common}>
-          <path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M16 12a2.6 2.6 0 1 0 0-5.2A2.6 2.6 0 0 0 16 12Z" stroke="currentColor" strokeWidth="1.6" opacity="0.8"/>
-          <path d="M3.8 20a4.8 4.8 0 0 1 8.4-3.2" stroke="currentColor" strokeWidth="1.6" opacity="0.8"/>
-          <path d="M12.5 20a4.2 4.2 0 0 1 7.7-2" stroke="currentColor" strokeWidth="1.6" opacity="0.7"/>
+          <path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M16 12a2.6 2.6 0 1 0 0-5.2A2.6 2.6 0 0 0 16 12Z" stroke="currentColor" strokeWidth="1.6" opacity="0.8" />
+          <path d="M3.8 20a4.8 4.8 0 0 1 8.4-3.2" stroke="currentColor" strokeWidth="1.6" opacity="0.8" />
+          <path d="M12.5 20a4.2 4.2 0 0 1 7.7-2" stroke="currentColor" strokeWidth="1.6" opacity="0.7" />
         </svg>
       );
     case "ball":
     default:
       return (
         <svg {...common}>
-          <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9"/>
-          <path d="M7 9l5-3 5 3-2 6H9L7 9Z" stroke="currentColor" strokeWidth="1.6" opacity="0.75"/>
+          <path d="M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18Z" stroke="currentColor" strokeWidth="1.6" opacity="0.9" />
+          <path d="M7 9l5-3 5 3-2 6H9L7 9Z" stroke="currentColor" strokeWidth="1.6" opacity="0.75" />
         </svg>
       );
   }
@@ -1208,7 +1253,7 @@ function GlobalStyles() {
       .tg_root[data-scene="weather"] {
         background: radial-gradient(1000px 700px at 15% 20%, rgba(0, 220, 180, 0.28), transparent 60%),
           radial-gradient(900px 650px at 80% 20%, rgba(255, 140, 30, 0.22), transparent 60%),
-          radial-gradient(900px 700px at 55% 95%, rgba(60, 80, 255, 0.20), transparent 60%),
+          radial-gradient(900px 700px at 55% 95%, rgba(60, 80, 255, 0.2), transparent 60%),
           #05060b;
       }
       .tg_root[data-scene="agenda"] {
@@ -1258,7 +1303,7 @@ function GlobalStyles() {
         width: 34px;
         height: 34px;
         object-fit: contain;
-        filter: drop-shadow(0 10px 18px rgba(0,0,0,0.35));
+        filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35));
       }
 
       .tg_brandName {
@@ -1300,7 +1345,7 @@ function GlobalStyles() {
         max-width: 80px;
         object-fit: contain;
         opacity: 0.95;
-        filter: drop-shadow(0 10px 18px rgba(0,0,0,0.35));
+        filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35));
       }
       .tg_tabText {
         font-size: 12px;
@@ -1330,7 +1375,7 @@ function GlobalStyles() {
 
       .tg_scene {
         border-radius: 28px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(0, 0, 0, 0.18);
         backdrop-filter: blur(14px);
         box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
@@ -1366,103 +1411,20 @@ function GlobalStyles() {
         opacity: 0.6;
       }
 
-      /* Welcome — agora “enche” a tela */
-      .tg_welcomeCard {
-  display: grid;
-  grid-template-columns: 1fr; /* era 32% 1fr */
-  gap: 18px;
-  align-items: stretch;
-  flex: 1;
-  min-height: 0;
-}
-
-      .tg_welcomeArt {
-        position: relative;
-        border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(255, 255, 255, 0.04);
-        overflow: hidden;
-        min-height: 480px;
-      }
-      .tg_welcomeStamp {
-        position: absolute;
-        left: 18px;
-        bottom: 18px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: rgba(0, 0, 0, 0.22);
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        font-size: 12px;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        opacity: 0.9;
-      }
-      .blob {
-        position: absolute;
-        width: 380px;
-        height: 380px;
-        border-radius: 999px;
-        filter: blur(18px);
-        opacity: 0.85;
-      }
-      .b1 {
-        left: -140px;
-        top: -140px;
-        background: radial-gradient(circle at 30% 30%, rgba(60, 80, 255, 0.9), rgba(60, 80, 255, 0.0) 60%);
-      }
-      .b2 {
-        right: -140px;
-        top: -80px;
-        background: radial-gradient(circle at 60% 40%, rgba(0, 220, 180, 0.85), rgba(0, 220, 180, 0.0) 60%);
-      }
-      .b3 {
-        left: 40px;
-        bottom: -200px;
-        background: radial-gradient(circle at 40% 60%, rgba(255, 30, 140, 0.75), rgba(255, 30, 140, 0.0) 60%);
-      }
-      .grid {
-        position: absolute;
-        inset: 0;
-        background-image: linear-gradient(rgba(255, 255, 255, 0.06) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
-        background-size: 46px 46px;
-        mask-image: radial-gradient(circle at 30% 30%, rgba(0, 0, 0, 1), transparent 65%);
-        opacity: 0.6;
-      }
-
+      /* ✅ Welcome (sem “Recepção”) — ocupa a TV */
       .tg_aboutWrap {
         border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.035);
         padding: 18px;
         display: flex;
         flex-direction: column;
         min-height: 0;
+        flex: 1;
       }
-
       .tg_aboutWrapSolo {
-  height: 100%;
-}
-
-.tg_aboutCards {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-areas:
-    "mission vision"
-    "values values";
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-  align-items: stretch;
-}
-
-.tg_aboutCard.mission { grid-area: mission; }
-.tg_aboutCard.vision { grid-area: vision; }
-.tg_aboutCard.values { grid-area: values; }
-
-.tg_aboutCard.values .tg_values {
-  grid-template-columns: 1fr 1fr; /* valores em 2 colunas */
-}
+        flex: 1;
+      }
 
       .tg_aboutHeader {
         display: flex;
@@ -1477,7 +1439,7 @@ function GlobalStyles() {
         font-size: 12px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(0, 0, 0, 0.18);
       }
       .tg_aboutHint {
@@ -1486,15 +1448,16 @@ function GlobalStyles() {
         white-space: nowrap;
       }
 
+      /* grid 2x2, com Valores ocupando a largura inteira */
       .tg_aboutCards {
         display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto;
         gap: 14px;
         flex: 1;
         min-height: 0;
         align-items: stretch;
       }
-
       .tg_aboutCard {
         border-radius: 18px;
         padding: 18px 16px;
@@ -1512,7 +1475,8 @@ function GlobalStyles() {
         box-shadow: inset 0 2px 0 rgba(60, 140, 255, 0.35);
       }
       .tg_aboutCard.values {
-        box-shadow: inset 0 2px 0 rgba(0, 220, 180, 0.30);
+        grid-column: 1 / span 2;
+        box-shadow: inset 0 2px 0 rgba(0, 220, 180, 0.3);
       }
 
       .tg_aboutLabel {
@@ -1522,8 +1486,8 @@ function GlobalStyles() {
         text-transform: uppercase;
       }
       .tg_aboutText {
-        font-size: 26px;
-        line-height: 1.1;
+        font-size: 30px;
+        line-height: 1.08;
         font-weight: 950;
         letter-spacing: -0.03em;
       }
@@ -1533,30 +1497,33 @@ function GlobalStyles() {
         font-weight: 700;
         margin-top: auto;
       }
+
       .tg_values {
         list-style: none;
         padding: 0;
         margin: 0;
         display: grid;
-        gap: 10px;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px 14px;
       }
       .tg_value {
         display: flex;
         gap: 10px;
         align-items: flex-start;
-        font-size: 14px;
+        font-size: 16px;
         opacity: 0.92;
-        font-weight: 800;
+        font-weight: 900;
+        line-height: 1.15;
       }
       .check {
-        width: 20px;
-        height: 20px;
+        width: 22px;
+        height: 22px;
         border-radius: 8px;
         display: grid;
         place-items: center;
         background: rgba(255, 255, 255, 0.08);
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        flex: 0 0 20px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        flex: 0 0 22px;
         margin-top: 1px;
       }
 
@@ -1597,7 +1564,7 @@ function GlobalStyles() {
         padding: 10px 12px;
         border-radius: 999px;
         background: rgba(0, 0, 0, 0.25);
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         font-size: 13px;
       }
 
@@ -1611,7 +1578,7 @@ function GlobalStyles() {
       }
       .tg_birthdaysShowcase {
         border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.03);
         padding: 14px;
         min-height: 0;
@@ -1644,7 +1611,7 @@ function GlobalStyles() {
         padding: 12px 12px;
         border-radius: 16px;
         background: rgba(0, 0, 0, 0.32);
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         backdrop-filter: blur(10px);
       }
       .tg_bdayName {
@@ -1664,7 +1631,7 @@ function GlobalStyles() {
 
       .tg_birthdaysList {
         border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.03);
         padding: 14px 14px 10px;
         min-height: 0;
@@ -1713,7 +1680,7 @@ function GlobalStyles() {
         font-weight: 700;
       }
 
-      /* Weather V2 (preenche melhor) */
+      /* Weather V2 */
       .tg_weatherGridV2 {
         display: grid;
         grid-template-columns: 1.2fr 0.8fr;
@@ -1728,7 +1695,7 @@ function GlobalStyles() {
       .tg_weatherAlerts,
       .tg_weatherSummary {
         border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.03);
         padding: 14px;
       }
@@ -1844,7 +1811,7 @@ function GlobalStyles() {
         gap: 10px;
         padding: 10px 12px;
         border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(0, 0, 0, 0.22);
         font-weight: 900;
         font-size: 12px;
@@ -1856,9 +1823,15 @@ function GlobalStyles() {
         background: rgba(255, 255, 255, 0.9);
         opacity: 0.9;
       }
-      .tg_alertPill.rain .tg_alertDot { background: rgba(0, 220, 180, 0.95); }
-      .tg_alertPill.uv .tg_alertDot { background: rgba(255, 140, 30, 0.95); }
-      .tg_alertPill.wind .tg_alertDot { background: rgba(60, 140, 255, 0.95); }
+      .tg_alertPill.rain .tg_alertDot {
+        background: rgba(0, 220, 180, 0.95);
+      }
+      .tg_alertPill.uv .tg_alertDot {
+        background: rgba(255, 140, 30, 0.95);
+      }
+      .tg_alertPill.wind .tg_alertDot {
+        background: rgba(60, 140, 255, 0.95);
+      }
 
       .tg_summaryLine {
         font-weight: 950;
@@ -1867,81 +1840,95 @@ function GlobalStyles() {
         opacity: 0.92;
         padding: 10px 10px;
         border-radius: 16px;
-        border: 1px solid rgba(255,255,255,0.08);
-        background: rgba(0,0,0,0.16);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.16);
       }
 
-      /* News V2 (layout igual seus prints na TV) */
-      .tg_newsGridV2 {
+      /* ✅ News — grid UNIFORME */
+      .tg_newsGridUniform {
         display: grid;
-        grid-template-columns: 1.55fr 1fr;
-        grid-template-rows: auto auto;
+        grid-template-columns: 1fr 1fr 1fr;
         gap: 14px;
         flex: 1;
         min-height: 0;
       }
-      .tg_newsFeaturedV2 {
-        grid-column: 1 / span 1;
-        grid-row: 1 / span 2;
-        min-height: 520px;
-      }
-      .tg_newsRightTop {
-        grid-column: 2 / span 1;
-        grid-row: 1 / span 1;
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
+
+      .tg_newsCardV2 {
+        position: relative;
+        border-radius: 22px;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.03);
         min-height: 260px;
       }
-      .tg_newsBottomRow {
-        grid-column: 2 / span 1;
-        grid-row: 2 / span 1;
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 12px;
+      .tg_newsCardV2.skeleton {
+        background: rgba(255, 255, 255, 0.05);
       }
 
-      .tg_newsGridV2.tg_newsGridUniform {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-auto-rows: 1fr;
-  gap: 14px;
-  flex: 1;
-  min-height: 0;
-}
-
-.tg_newsCardV2 {
-  position: relative;
-  border-radius: 22px;
-  overflow: hidden;
-  border: 1px solid rgba(255, 255, 255, 0.10);
-  background: rgba(255, 255, 255, 0.03);
-  height: 100%;
-  min-height: 260px;
-}
-
-.tg_root.tv .tg_newsCardV2 {
-  min-height: 300px;
-}
-
-.tg_newsCardV2.skeleton {
-  display: grid;
-  place-items: center;
-  text-align: center;
-}
-
-.tg_skeletonTitle {
-  font-weight: 950;
-  letter-spacing: -0.03em;
-  font-size: 18px;
-}
-
-.tg_skeletonSub {
-  opacity: 0.75;
-  font-size: 13px;
-  font-weight: 700;
-  margin-top: 6px;
-}
+      .tg_newsBg {
+        position: absolute;
+        inset: 0;
+      }
+      .tg_newsBgImg {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+        filter: saturate(1.05) contrast(1.03);
+        transform: scale(1.03);
+      }
+      .tg_newsBgShade {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0.25));
+      }
+      .tg_newsOverlay {
+        position: relative;
+        z-index: 1;
+        padding: 16px;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        gap: 10px;
+      }
+      .tg_newsPill {
+        align-self: flex-start;
+        display: inline-flex;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 10px;
+        border-radius: 999px;
+        border: 1px solid rgba(255, 255, 255, 0.12);
+        background: rgba(0, 0, 0, 0.22);
+        backdrop-filter: blur(10px);
+        font-weight: 950;
+        font-size: 12px;
+      }
+      .tg_newsPillDot {
+        width: 8px;
+        height: 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.95);
+        opacity: 0.9;
+      }
+      .tg_newsTitleV2 {
+        font-weight: 950;
+        letter-spacing: -0.03em;
+        font-size: 20px;
+        line-height: 1.1;
+        display: -webkit-box;
+        -webkit-line-clamp: 4;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .tg_newsMetaV2 {
+        opacity: 0.85;
+        font-size: 12px;
+        font-weight: 800;
+      }
+      .tg_newsDomainV2 {
+        opacity: 0.9;
+      }
 
       /* Agenda GC */
       .tg_agendaGrid {
@@ -1954,8 +1941,8 @@ function GlobalStyles() {
       .tg_agendaNext,
       .tg_agendaList {
         border-radius: 22px;
-        border: 1px solid rgba(255,255,255,0.10);
-        background: rgba(255,255,255,0.03);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.03);
         padding: 16px;
         position: relative;
         overflow: hidden;
@@ -1975,8 +1962,8 @@ function GlobalStyles() {
 
       .tg_agendaNextCard {
         border-radius: 18px;
-        border: 1px solid rgba(255,255,255,0.10);
-        background: rgba(0,0,0,0.18);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.18);
         padding: 14px;
         display: grid;
         grid-template-columns: 60px 1fr;
@@ -1991,11 +1978,15 @@ function GlobalStyles() {
         border-radius: 18px;
         display: grid;
         place-items: center;
-        border: 1px solid rgba(255,255,255,0.10);
-        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.06);
       }
-      .tg_agendaNextIcon svg { opacity: 0.95; }
-      .tg_agendaNextBody { min-width: 0; }
+      .tg_agendaNextIcon svg {
+        opacity: 0.95;
+      }
+      .tg_agendaNextBody {
+        min-width: 0;
+      }
       .tg_agendaNextTitle {
         font-weight: 950;
         letter-spacing: -0.03em;
@@ -2031,7 +2022,7 @@ function GlobalStyles() {
         position: absolute;
         right: -40px;
         bottom: -40px;
-        opacity: 0.10;
+        opacity: 0.1;
         transform: scale(3.2);
         pointer-events: none;
       }
@@ -2051,8 +2042,8 @@ function GlobalStyles() {
       }
       .tg_agendaItem {
         border-radius: 18px;
-        border: 1px solid rgba(255,255,255,0.10);
-        background: rgba(0,0,0,0.18);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.18);
         padding: 12px;
         display: grid;
         grid-template-columns: 44px 1fr;
@@ -2065,11 +2056,15 @@ function GlobalStyles() {
         border-radius: 14px;
         display: grid;
         place-items: center;
-        border: 1px solid rgba(255,255,255,0.10);
-        background: rgba(255,255,255,0.06);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(255, 255, 255, 0.06);
       }
-      .tg_agendaItemIcon svg { opacity: 0.95; }
-      .tg_agendaItemBody { min-width: 0; }
+      .tg_agendaItemIcon svg {
+        opacity: 0.95;
+      }
+      .tg_agendaItemBody {
+        min-width: 0;
+      }
       .tg_agendaItemTop {
         display: flex;
         justify-content: space-between;
@@ -2100,8 +2095,12 @@ function GlobalStyles() {
         gap: 6px;
         align-items: center;
       }
-      .tg_dotSm { opacity: 0.5; }
-      .tg_agendaItemChips { opacity: 0.8; }
+      .tg_dotSm {
+        opacity: 0.5;
+      }
+      .tg_agendaItemChips {
+        opacity: 0.8;
+      }
 
       /* Footer */
       .tg_footer {
@@ -2121,7 +2120,7 @@ function GlobalStyles() {
         align-items: center;
         padding: 12px 14px;
         border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(0, 0, 0, 0.28);
         backdrop-filter: blur(12px);
         font-weight: 950;
@@ -2138,7 +2137,7 @@ function GlobalStyles() {
       .tg_ticker {
         position: relative;
         border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(0, 0, 0, 0.24);
         backdrop-filter: blur(12px);
         overflow: hidden;
@@ -2182,8 +2181,12 @@ function GlobalStyles() {
         opacity: 0.55;
       }
       @keyframes tgMarquee {
-        from { transform: translateX(0); }
-        to { transform: translateX(-50%); }
+        from {
+          transform: translateX(0);
+        }
+        to {
+          transform: translateX(-50%);
+        }
       }
 
       .tg_footerPills {
@@ -2195,7 +2198,7 @@ function GlobalStyles() {
       .tg_chip {
         padding: 12px 14px;
         border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(0, 0, 0, 0.28);
         backdrop-filter: blur(12px);
         font-weight: 950;
@@ -2205,8 +2208,8 @@ function GlobalStyles() {
       .tg_chipTiny {
         padding: 8px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.20);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.2);
         backdrop-filter: blur(10px);
         font-weight: 900;
         font-size: 12px;
@@ -2216,8 +2219,8 @@ function GlobalStyles() {
       .tg_chipSm {
         padding: 8px 10px;
         border-radius: 999px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        background: rgba(0, 0, 0, 0.20);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(0, 0, 0, 0.2);
         backdrop-filter: blur(10px);
         font-weight: 900;
         font-size: 12px;
@@ -2239,7 +2242,7 @@ function GlobalStyles() {
         height: 100%;
         min-height: 180px;
         border-radius: 22px;
-        border: 1px solid rgba(255, 255, 255, 0.10);
+        border: 1px solid rgba(255, 255, 255, 0.1);
         background: rgba(255, 255, 255, 0.03);
         display: grid;
         place-items: center;
@@ -2259,23 +2262,39 @@ function GlobalStyles() {
         font-weight: 700;
       }
 
-      /* TV mode: deixa MAIS “TV-friendly”, não menor */
-      .tg_root.tv .tg_time { font-size: 64px; }
-.tg_root.tv .tg_title { font-size: 58px; }
-.tg_root.tv .tg_scene { padding: 30px; }
+      /* TV mode */
+      .tg_root.tv .tg_time {
+        font-size: 64px;
+      }
+      .tg_root.tv .tg_title {
+        font-size: 58px;
+      }
+      .tg_root.tv .tg_scene {
+        padding: 30px;
+      }
+      .tg_root.tv .tg_aboutText {
+        font-size: 34px;
+      }
+      .tg_root.tv .tg_value {
+        font-size: 18px;
+      }
 
-.tg_root.tv .tg_aboutText { font-size: 34px; }
-.tg_root.tv .tg_aboutLabel { font-size: 14px; }
-.tg_root.tv .tg_value { font-size: 16px; }
-.tg_root.tv .tg_aboutCard { padding: 22px 20px; }
-
-      /* auto-otimização quando a tela for grande (TV) */
       @media (min-width: 1500px) and (min-height: 800px) {
-        .tg_title { font-size: 60px; }
-        .tg_time { font-size: 66px; }
-        .tg_scene { min-height: calc(100vh - 180px); }
-        .tg_welcomeArt { min-height: 560px; }
-        .tg_posterFrame { min-height: 560px; }
+        .tg_title {
+          font-size: 60px;
+        }
+        .tg_time {
+          font-size: 66px;
+        }
+        .tg_scene {
+          min-height: calc(100vh - 180px);
+        }
+        .tg_posterFrame {
+          min-height: 560px;
+        }
+        .tg_newsCardV2 {
+          min-height: 290px;
+        }
       }
     `}</style>
   );
