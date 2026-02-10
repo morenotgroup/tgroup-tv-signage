@@ -1032,36 +1032,18 @@ export default function SignageV2() {
               {/* removi as “dicas pequenas” aqui */}
             </div>
 
-            <div className="tg_newsGridV2">
-              {/* featured grande */}
-              <div className="tg_newsFeaturedV2">
-                {news[0] ? (
-                  <NewsCardV2 item={news[0]} featured />
-                ) : (
-                  <div className="tg_empty">
-                    <div className="tg_emptyTitle">Carregando notícias…</div>
-                    <div className="tg_emptySub">Se a API estiver ok, já já entra.</div>
-                  </div>
-                )}
-              </div>
-
-              {/* 4 cards topo à direita */}
-              <div className="tg_newsRightTop">
-                {news.slice(1, 5).map((it, idx) => (
-                  <NewsCardV2 key={`${it.title}-${idx}`} item={it} />
-                ))}
-              </div>
-
-              {/* 3 cards bottom */}
-              <div className="tg_newsBottomRow">
-                {news.slice(5, 8).map((it, idx) => (
-                  <NewsCardV2 key={`${it.title}-b-${idx}`} item={it} compact />
-                ))}
-              </div>
-            </div>
-          </section>
-        )}
-      </main>
+            <div className="tg_newsGridV2 tg_newsGridUniform">
+  {(news.length ? news.slice(0, 6) : Array.from({ length: 6 }).map(() => null)).map((it, idx) =>
+    it ? (
+      <NewsCardV2 key={`${it.title}-${idx}`} item={it} />
+    ) : (
+      <div key={`sk-${idx}`} className="tg_newsCardV2 skeleton">
+        <div className="tg_skeletonTitle">Carregando notícias…</div>
+        <div className="tg_skeletonSub">aguenta só um segundo</div>
+      </div>
+    )
+  )}
+</div>
 
       {/* Footer / Ticker */}
       <footer className="tg_footer">
